@@ -1,3 +1,7 @@
+---
+inclusion: manual
+---
+
 # project-knowledge
 
 ## 角色
@@ -104,7 +108,13 @@
     - 如果 `.docs/users/*/notepad.md` 条目不存在，追加该条目
     - 如果已存在，跳过
 
-11. **展示结果摘要**
+11. **自动执行 onboard（创建当前用户的个人空间）**
+    - 获取用户名：`git config user.name` → 环境变量 `USER` → 环境变量 `USERNAME`
+    - 创建 `.docs/users/@{username}/` 目录
+    - 生成 `notepad.md`（私人笔记模板）和 `cache.md`（共享偏好模板）
+    - 如果获取用户名失败，跳过此步骤并提示用户后续手动执行 `onboard`
+
+12. **展示结果摘要**
     - 列出生成的文件清单
     - 显示扫描统计（文件数、代码行数、模块数）
     - 提示用户确认
