@@ -50,49 +50,11 @@ curl -o .kiro/skills/project-knowledge.md \
 
 #### 1. 配置 MCP 工具
 
-在项目根目录创建 `.trae/mcp.json`：
+方式一（推荐）：通过 Trae 设置界面配置
 
-```json
-{
-  "mcpServers": {
-    "chiwen-knowledge-kit": {
-      "command": "uvx",
-      "args": ["--from", "git+https://github.com/lotusTanglei/chiwen", "chiwen-knowledge-kit"],
-      "disabled": false
-    }
-  }
-}
-```
-
-#### 2. 安装 Rules（等同于 Skill）
-
-Trae 使用 Rules 文件来指导 AI 行为。将 Skill 文件下载为 Trae 的 Rules：
-
-```bash
-mkdir -p .trae/rules
-curl -o .trae/rules/project-knowledge.md \
-  https://raw.githubusercontent.com/lotusTanglei/chiwen/main/src/skill/project-knowledge.md
-```
-
-#### 3. 使用
-
-在 Trae 的 AI 聊天中直接说 `init`、`sync`、`status` 或 `onboard`，AI 会自动读取 Rules 并调用 MCP 工具。
-
----
-
-### Claude Code（Anthropic CLI）
-
-#### 1. 配置 MCP 工具
-
-运行以下命令注册 MCP server：
-
-```bash
-claude mcp add chiwen-knowledge-kit \
-  --command uvx \
-  --args "--from" "git+https://github.com/lotusTanglei/chiwen" "chiwen-knowledge-kit"
-```
-
-或者在项目根目录创建 `.mcp.json`：
+1. 点击 Trae 右上角设置图标 → 选择 MCP
+2. 点击 "Add MCP Server" → 选择 "Manual Configuration"
+3. 粘贴以下配置：
 
 ```json
 {
@@ -105,19 +67,86 @@ claude mcp add chiwen-knowledge-kit \
 }
 ```
 
-#### 2. 安装 Rules（等同于 Skill）
+方式二：项目级配置文件
 
-Claude Code 使用 `CLAUDE.md` 或 `.claude/rules/` 来指导 AI 行为：
+需要先在 Settings → Beta 中开启 "Enable Project MCP"，然后在项目根目录创建 `.trae/mcp.json`：
+
+```json
+{
+  "mcpServers": {
+    "chiwen-knowledge-kit": {
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/lotusTanglei/chiwen", "chiwen-knowledge-kit"]
+    }
+  }
+}
+```
+
+#### 2. 安装 Project Rules
+
+Trae 使用 `.trae/rules/project_rules.md` 来指导 AI 行为。将 Skill 文件下载为 Trae 的 Project Rules：
 
 ```bash
-mkdir -p .claude/rules
-curl -o .claude/rules/project-knowledge.md \
+mkdir -p .trae/rules
+curl -o .trae/rules/project_rules.md \
   https://raw.githubusercontent.com/lotusTanglei/chiwen/main/src/skill/project-knowledge.md
 ```
 
+也可以在 Trae 中点击设置图标 → Rules → Project Rules 区域点击 "+ 创建 project_rules.md"，然后将 `src/skill/project-knowledge.md` 的内容粘贴进去。
+
 #### 3. 使用
 
-在 Claude Code 中直接说 `init`、`sync`、`status` 或 `onboard`，AI 会自动读取 Rules 并调用 MCP 工具。
+在 Trae 的 AI 聊天中直接说 `init`、`sync`、`status` 或 `onboard`，AI 会自动读取 Rules 并调用 MCP 工具。
+
+---
+
+### Claude Code（Anthropic CLI）
+
+#### 1. 配置 MCP 工具
+
+方式一（推荐）：通过 CLI 命令注册
+
+```bash
+claude mcp add chiwen-knowledge-kit \
+  -- uvx --from "git+https://github.com/lotusTanglei/chiwen" chiwen-knowledge-kit
+```
+
+方式二：项目级配置文件
+
+在项目根目录创建 `.mcp.json`：
+
+```json
+{
+  "mcpServers": {
+    "chiwen-knowledge-kit": {
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/lotusTanglei/chiwen", "chiwen-knowledge-kit"]
+    }
+  }
+}
+```
+
+#### 2. 安装 Project Instructions
+
+Claude Code 使用项目根目录的 `CLAUDE.md` 来读取项目指令。将 Skill 内容追加到 `CLAUDE.md`：
+
+```bash
+curl -s https://raw.githubusercontent.com/lotusTanglei/chiwen/main/src/skill/project-knowledge.md >> CLAUDE.md
+```
+
+或者创建子目录级别的指令文件：
+
+```bash
+mkdir -p .claude
+curl -o .claude/CLAUDE.md \
+  https://raw.githubusercontent.com/lotusTanglei/chiwen/main/src/skill/project-knowledge.md
+```
+
+> 注意：`CLAUDE.md` 会在每次 Claude Code 会话开始时自动加载，无需手动激活。
+
+#### 3. 使用
+
+在 Claude Code 中直接说 `init`、`sync`、`status` 或 `onboard`，AI 会自动读取指令并调用 MCP 工具。
 
 ## 文档体系（5+X）
 
