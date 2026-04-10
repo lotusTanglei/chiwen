@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+
+# Kiro workspace files
+.kiro/
+
+# Draft design doc
+design.md
+
+# chiwen docs personal notes
+.docs/users/*/notepad.md
