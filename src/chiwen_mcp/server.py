@@ -8,8 +8,25 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import asdict
+from enum import Enum
 
 from mcp.server.fastmcp import FastMCP
+
+
+def _serialize(obj):
+    """将 dataclass 转为 JSON 兼容的 dict，处理 Enum 类型。"""
+    data = asdict(obj)
+
+    def _convert(d):
+        if isinstance(d, dict):
+            return {k: _convert(v) for k, v in d.items()}
+        if isinstance(d, list):
+            return [_convert(i) for i in d]
+        if isinstance(d, Enum):
+            return d.value
+        return d
+
+    return _convert(data)
 
 from .code_reader import CodeReaderInput, scan_project
 from .doc_code_lens import run_doc_code_lens
@@ -76,7 +93,7 @@ def code_reader(
 
     try:
         result = scan_project(input_params)
-        return json.dumps(asdict(result), ensure_ascii=False)
+        return json.dumps(_serialize(result), ensure_ascii=False)
     except Exception as e:
         return json.dumps(
             {"error": f"扫描失败：{e}"},
@@ -144,7 +161,7 @@ def doc_code_lens(
 
     try:
         result = run_doc_code_lens(input_params)
-        return json.dumps(asdict(result), ensure_ascii=False)
+        return json.dumps(_serialize(result), ensure_ascii=False)
     except Exception as e:
         return json.dumps(
             {"error": f"扫描失败：{e}"},
@@ -210,7 +227,7 @@ def git_changelog(
 
     try:
         result = run_git_changelog(input_params)
-        return json.dumps(asdict(result), ensure_ascii=False)
+        return json.dumps(_serialize(result), ensure_ascii=False)
     except RuntimeError as e:
         return json.dumps(
             {"error": str(e)},
