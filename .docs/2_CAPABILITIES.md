@@ -25,12 +25,14 @@
 
 - [ ] generate_fix_content
 - [ ] apply_capability_fixes
+- [ ] apply_reverse_fixes
 - [ ] sync_docs
 
 ## 健康度报告（status 命令）
 
 - [ ] HealthReport
 - [ ] get_status
+- [ ] export_markdown
 
 ## 入职引导（onboard 命令）
 
@@ -52,3 +54,51 @@
 - [ ] generate_pre_commit_hook
 - [ ] generate_pre_commit_yaml_config
 - [ ] generate_cron_config
+
+## 数据模型
+
+- [ ] ProjectInfo
+- [ ] FileNode
+- [ ] EntryPoint
+- [ ] Module
+- [ ] DataModel
+- [ ] ApiRoute
+- [ ] Dependencies
+- [ ] ScanMeta
+- [ ] CodeReaderInput
+- [ ] CodeReaderOutput
+- [ ] Confidence（枚举）
+- [ ] ConfidenceScore
+- [ ] DriftType（枚举）
+- [ ] Priority（枚举）
+- [ ] Action（枚举）
+- [ ] DocCodeLensInput
+- [ ] DriftSummary
+- [ ] MatchedFile
+- [ ] ForwardDrift
+- [ ] ReverseDrift
+- [ ] Recommendation
+- [ ] DocCodeLensOutput
+- [ ] ChangelogEntry
+- [ ] ChangelogGroup
+- [ ] ChangelogDoc
+- [ ] GitChangelogInput
+- [ ] Contributor
+- [ ] ModuleActivity
+- [ ] CommitInfo
+- [ ] StaleFile
+- [ ] GitChangelogOutput
+
+## 内部辅助
+
+- [ ] DocClaim
+- [ ] ModuleDescription
+- [ ] generate_reverse_recommendations
+- [ ] SyncResult
+- [ ] FixContent
+
+## 自定义模板引擎
+
+- [ ] TemplateEngine
+- [ ] TemplateResult
+- [ ] InitTemplatesResult

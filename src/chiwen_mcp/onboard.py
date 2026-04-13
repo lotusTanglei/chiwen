@@ -1,6 +1,6 @@
 """chiwen Knowledge Kit - Onboard 命令逻辑
 
-实现新成员入职引导功能：获取用户名、创建个人空间、输出阅读清单。
+实现成员加入项目引导功能：获取用户名、创建个人空间、输出阅读清单。
 """
 
 from __future__ import annotations
@@ -91,7 +91,7 @@ def generate_cache(username: str) -> str:
 
 
 def get_reading_list() -> list[dict[str, str]]:
-    """返回入职阅读清单。
+    """返回项目阅读清单。
 
     按顺序引导阅读：0_INDEX.md → 1_ARCHITECTURE.md → 2_CAPABILITIES.md。
 
@@ -124,7 +124,7 @@ def onboard(project_root: str, username: str | None = None) -> dict:
         - username: 使用的用户名
         - user_dir: 创建的个人目录路径
         - files_created: 创建的文件列表
-        - reading_list: 入职阅读清单
+        - reading_list: 项目阅读清单
         - message: 结果消息
         - already_exists: 个人目录是否已存在（仅当已存在时出现）
     """

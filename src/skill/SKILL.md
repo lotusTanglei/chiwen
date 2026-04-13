@@ -1,6 +1,6 @@
 ---
 name: project-knowledge
-description: AI 驱动的项目知识管理助手。通过 MCP 工具链实现项目文档的自动生成、drift 检测与修复、健康度报告和入职引导。
+description: AI 驱动的项目知识管理助手。通过 MCP 工具链实现项目文档的自动生成、drift 检测与修复、健康度报告和成员引导。
 inclusion: manual
 ---
 
@@ -92,9 +92,7 @@ inclusion: manual
 
 10. **更新 `.gitignore`** — 追加 `.docs/users/*/notepad.md`（已存在则跳过）
 
-11. **自动执行 onboard** — 获取用户名 → 创建个人空间（notepad.md + cache.md），失败则跳过
-
-12. **展示结果摘要**
+11. **展示结果摘要**
 
 ---
 
@@ -119,9 +117,9 @@ inclusion: manual
 
 ---
 
-### onboard — 新成员入职引导
+### onboard — 成员加入项目引导
 
-触发条件：用户要求入职引导，或用户说 "onboard"。
+触发条件：用户要求加入项目引导，或用户说 "onboard"。
 
 流程：
 

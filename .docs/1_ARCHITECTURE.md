@@ -17,7 +17,7 @@
   - `models.py` — 共享数据模型
   - `server.py` — MCP Server 注册入口
 - **Skill 编排层**（`src/skill/`）：流程编排和用户交互
-  - `project-knowledge.md` — Steering 指令文件
+  - `project-knowledge.md` → `SKILL.md` — AI Steering 指令文件
 - **业务逻辑层**（`src/chiwen_mcp/`）：命令实现
   - `doc_generator.py` — init 命令文档生成
   - `sync.py` — sync 命令同步逻辑
@@ -42,7 +42,7 @@
 | 命令实现 | `src/chiwen_mcp/onboard.py` | onboard 命令：个人空间创建 + 阅读清单 |
 | 工具 | `src/chiwen_mcp/changelog_utils.py` | 5_CHANGELOG.md 解析和追加 |
 | 工具 | `src/chiwen_mcp/integrations.py` | CI/pre-commit/cron 配置模板生成 |
-| Skill | `src/skill/project-knowledge.md` | AI Steering 指令文件 |
+| Skill | `src/skill/SKILL.md` | AI Steering 指令文件 |
 | 测试 | `tests/` | 253 个单元测试和集成测试 |
 
 ## 4. 核心执行流程
