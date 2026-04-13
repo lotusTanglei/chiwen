@@ -19,11 +19,14 @@ from chiwen_mcp.models import (
     DriftType,
     ForwardDrift,
     MatchedFile,
+    Module,
+    ReverseDrift,
 )
 from chiwen_mcp.sync import (
     FixContent,
     SyncResult,
     apply_capability_fixes,
+    apply_reverse_fixes,
     generate_fix_content,
     sync_docs,
 )
@@ -406,3 +409,233 @@ class TestSyncDocs:
         assert isinstance(result.changelog_updated, bool)
         assert isinstance(result.details, list)
         assert len(result.details) > 0
+
+
+# ── apply_reverse_fixes 测试 ──
+
+
+class TestApplyReverseFixes:
+    def _write_capabilities(self, tmp_path: Path, content: str) -> str:
+        cap_path = tmp_path / "2_CAPABILITIES.md"
+        cap_path.write_text(content, encoding="utf-8")
+        return str(cap_path)
+
+    def test_append_to_matching_module(self, tmp_path: Path):
+        """reverse drift 应追加到匹配的模块分组末尾。"""
+        content = (
+            "# 能力矩阵\n\n"
+            "## 模块A\n\n"
+            "- [x] 已有功能\n\n"
+            "## 模块B\n\n"
+            "- [x] 功能B1\n"
+        )
+        cap_path = self._write_capabilities(tmp_path, content)
+
+        drifts = [
+            ReverseDrift(
+                file="src/module_a.py",
+                location="module:模块A",
+                capability="new_api_a",
+                doc_mentioned=False,
+            ),
+        ]
+        modules = [
+            Module(name="模块A", path="src/module_a.py"),
+            Module(name="模块B", path="src/module_b.py"),
+        ]
+
+        updated, changes = apply_reverse_fixes(cap_path, drifts, modules)
+
+        assert "- [ ] new_api_a" in updated
+        # 应在模块A分组中
+        lines = updated.splitlines()
+        mod_a_idx = next(i for i, l in enumerate(lines) if "## 模块A" in l)
+        mod_b_idx = next(i for i, l in enumerate(lines) if "## 模块B" in l)
+        new_cap_idx = next(i for i, l in enumerate(lines) if "new_api_a" in l)
+        assert mod_a_idx < new_cap_idx < mod_b_idx
+        assert len(changes) == 1
+        assert "模块A" in changes[0]
+
+    def test_uncategorized_when_no_module_match(self, tmp_path: Path):
+        """无法匹配模块时追加到「未分类」分组。"""
+        content = (
+            "# 能力矩阵\n\n"
+            "## 模块A\n\n"
+            "- [x] 已有功能\n"
+        )
+        cap_path = self._write_capabilities(tmp_path, content)
+
+        drifts = [
+            ReverseDrift(
+                file="src/unknown.py",
+                location="module:unknown",
+                capability="orphan_api",
+                doc_mentioned=False,
+            ),
+        ]
+        modules = [Module(name="模块A", path="src/module_a.py")]
+
+        updated, changes = apply_reverse_fixes(cap_path, drifts, modules)
+
+        assert "- [ ] orphan_api" in updated
+        assert "## 未分类" in updated
+        assert any("未分类" in c for c in changes)
+
+    def test_create_uncategorized_section(self, tmp_path: Path):
+        """「未分类」分组不存在时应自动创建。"""
+        content = (
+            "# 能力矩阵\n\n"
+            "## 模块A\n\n"
+            "- [x] 已有功能\n"
+        )
+        cap_path = self._write_capabilities(tmp_path, content)
+
+        drifts = [
+            ReverseDrift(
+                file="src/unknown.py",
+                capability="orphan_api",
+            ),
+        ]
+        modules = [Module(name="模块A", path="src/module_a.py")]
+
+        updated, changes = apply_reverse_fixes(cap_path, drifts, modules)
+
+        assert "## 未分类" in updated
+        assert "- [ ] orphan_api" in updated
+
+    def test_preserves_existing_content(self, tmp_path: Path):
+        """追加操作应保留已有内容的每一行。"""
+        content = (
+            "# 能力矩阵\n\n"
+            "> 说明文字\n\n"
+            "## 模块A\n\n"
+            "- [x] 已有功能A\n"
+            "- [ ] 未实现功能\n"
+            "- (废弃) 旧功能\n\n"
+            "## 模块B\n\n"
+            "- [x] 功能B1\n"
+        )
+        cap_path = self._write_capabilities(tmp_path, content)
+        original_lines = content.splitlines()
+
+        drifts = [
+            ReverseDrift(
+                file="src/module_a.py",
+                capability="new_api",
+            ),
+        ]
+        modules = [
+            Module(name="模块A", path="src/module_a.py"),
+            Module(name="模块B", path="src/module_b.py"),
+        ]
+
+        updated, _ = apply_reverse_fixes(cap_path, drifts, modules)
+        updated_lines = updated.splitlines()
+
+        # 所有原有行都应保留
+        for orig_line in original_lines:
+            assert orig_line in updated_lines, f"丢失行: {orig_line!r}"
+
+    def test_file_not_exists_creates_with_uncategorized(self, tmp_path: Path):
+        """文件不存在时创建新文件仅包含「未分类」分组。"""
+        cap_path = str(tmp_path / "nonexistent.md")
+
+        drifts = [
+            ReverseDrift(
+                file="src/unknown.py",
+                capability="new_api",
+            ),
+        ]
+        modules: list[Module] = []
+
+        updated, changes = apply_reverse_fixes(cap_path, drifts, modules)
+
+        assert "## 未分类" in updated
+        assert "- [ ] new_api" in updated
+        assert len(changes) == 1
+
+    def test_no_drifts_returns_original(self, tmp_path: Path):
+        """无 reverse drift 时返回原内容不变。"""
+        content = "# 能力矩阵\n\n## 模块A\n\n- [x] 已有功能\n"
+        cap_path = self._write_capabilities(tmp_path, content)
+
+        updated, changes = apply_reverse_fixes(cap_path, [], [])
+
+        assert updated == content
+        assert changes == []
+
+    def test_skip_duplicate_capabilities(self, tmp_path: Path):
+        """已存在的能力不应重复追加。"""
+        content = (
+            "# 能力矩阵\n\n"
+            "## 模块A\n\n"
+            "- [x] existing_api\n"
+        )
+        cap_path = self._write_capabilities(tmp_path, content)
+
+        drifts = [
+            ReverseDrift(
+                file="src/module_a.py",
+                capability="existing_api",
+            ),
+        ]
+        modules = [Module(name="模块A", path="src/module_a.py")]
+
+        updated, changes = apply_reverse_fixes(cap_path, drifts, modules)
+
+        # 不应有变更
+        assert changes == []
+        # 只应出现一次
+        assert updated.count("existing_api") == 1
+
+    def test_multiple_drifts_multiple_modules(self, tmp_path: Path):
+        """多个 drift 项分别追加到各自的模块分组。"""
+        content = (
+            "# 能力矩阵\n\n"
+            "## 模块A\n\n"
+            "- [x] 功能A1\n\n"
+            "## 模块B\n\n"
+            "- [x] 功能B1\n"
+        )
+        cap_path = self._write_capabilities(tmp_path, content)
+
+        drifts = [
+            ReverseDrift(file="src/module_a.py", capability="new_a"),
+            ReverseDrift(file="src/module_b.py", capability="new_b"),
+            ReverseDrift(file="src/unknown.py", capability="new_unknown"),
+        ]
+        modules = [
+            Module(name="模块A", path="src/module_a.py"),
+            Module(name="模块B", path="src/module_b.py"),
+        ]
+
+        updated, changes = apply_reverse_fixes(cap_path, drifts, modules)
+
+        assert "- [ ] new_a" in updated
+        assert "- [ ] new_b" in updated
+        assert "- [ ] new_unknown" in updated
+        assert "## 未分类" in updated
+        assert len(changes) == 3
+
+    def test_append_to_existing_uncategorized(self, tmp_path: Path):
+        """已有「未分类」分组时追加到该分组末尾。"""
+        content = (
+            "# 能力矩阵\n\n"
+            "## 模块A\n\n"
+            "- [x] 功能A1\n\n"
+            "## 未分类\n\n"
+            "- [ ] 已有未分类项\n"
+        )
+        cap_path = self._write_capabilities(tmp_path, content)
+
+        drifts = [
+            ReverseDrift(file="src/unknown.py", capability="new_orphan"),
+        ]
+        modules = [Module(name="模块A", path="src/module_a.py")]
+
+        updated, changes = apply_reverse_fixes(cap_path, drifts, modules)
+
+        assert "- [ ] new_orphan" in updated
+        assert "- [ ] 已有未分类项" in updated
+        # 不应创建第二个「未分类」分组
+        assert updated.count("## 未分类") == 1

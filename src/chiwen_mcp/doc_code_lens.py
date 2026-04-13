@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import asdict, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from .code_reader import CodeReaderInput, scan_project
@@ -61,6 +61,142 @@ class ModuleDescription:
         self.layer = layer
         self.doc_file = doc_file
         self.doc_location = doc_location
+
+
+# ── 多因子加权评分数据模型 ──
+
+
+@dataclass
+class ConfidenceScore:
+    """多因子加权评分结果"""
+
+    score: float  # 综合得分 [0.0, 1.0]
+    confidence: Confidence  # 映射后的置信度等级
+    factors: dict[str, float]  # 各因子得分明细
+
+
+# ── 辅助函数 ──
+
+
+def _compute_confidence_score(
+    claim_name: str,
+    file_content: str,
+    file_path: str,
+    module_public_api: list[str],
+) -> ConfidenceScore:
+    """多因子加权评分算法。
+
+    因子及权重：
+    - 精确名称匹配 (0.40): claim 名称与 public_api 条目标准化后完全一致
+    - 关键词覆盖率 (0.25): 关键词在文件内容中的匹配比率
+    - 代码结构匹配 (0.20): 匹配位置是否在 def/class/async def 定义处
+    - 文件路径相关性 (0.15): 文件路径中是否包含 claim 的关键词
+
+    得分映射：
+    - score >= 0.7 → HIGH
+    - 0.4 <= score < 0.7 → MEDIUM
+    - score < 0.4 → LOW
+
+    Args:
+        claim_name: 文档中的能力声明名称
+        file_content: 代码文件内容
+        file_path: 代码文件路径
+        module_public_api: 模块公开 API 列表
+
+    Returns:
+        ConfidenceScore 包含综合得分、置信度等级和各因子明细
+    """
+    keywords = _extract_keywords(claim_name)
+
+    # 边界情况：空关键词列表
+    if not keywords:
+        return ConfidenceScore(
+            score=0.0,
+            confidence=Confidence.LOW,
+            factors={
+                "exact_name_match": 0.0,
+                "keyword_coverage": 0.0,
+                "code_structure_match": 0.0,
+                "file_path_relevance": 0.0,
+            },
+        )
+
+    claim_normalized = _normalize_name(claim_name)
+
+    # ── 因子 1：精确名称匹配 (权重 0.40) ──
+    exact_name_match = 0.0
+    for api in module_public_api:
+        api_normalized = _normalize_name(api)
+        if claim_normalized == api_normalized:
+            exact_name_match = 1.0
+            break
+
+    # ── 因子 2：关键词覆盖率 (权重 0.25) ──
+    content_lower = file_content.lower()
+    matched_count = sum(1 for kw in keywords if kw in content_lower)
+    keyword_coverage = matched_count / len(keywords)
+
+    # ── 因子 3：代码结构匹配 (权重 0.20) ──
+    code_structure_match = 0.0
+    for line in file_content.splitlines():
+        line_lower = line.lower()
+        if any(kw in line_lower for kw in keywords):
+            if _is_definition_context(line):
+                code_structure_match = 1.0
+                break
+    # 如果关键词出现在文件中但不在定义处，给部分分数
+    if code_structure_match == 0.0 and keyword_coverage > 0:
+        code_structure_match = 0.3
+
+    # ── 因子 4：文件路径相关性 (权重 0.15) ──
+    path_lower = file_path.lower()
+    path_matched = sum(1 for kw in keywords if kw in path_lower)
+    file_path_relevance = path_matched / len(keywords)
+
+    # ── 综合得分 ──
+    score = (
+        exact_name_match * 0.40
+        + keyword_coverage * 0.25
+        + code_structure_match * 0.20
+        + file_path_relevance * 0.15
+    )
+
+    # 确保 score 在 [0.0, 1.0] 范围内
+    score = max(0.0, min(1.0, score))
+
+    # ── 得分映射 ──
+    if score >= 0.7:
+        confidence = Confidence.HIGH
+    elif score >= 0.4:
+        confidence = Confidence.MEDIUM
+    else:
+        confidence = Confidence.LOW
+
+    return ConfidenceScore(
+        score=score,
+        confidence=confidence,
+        factors={
+            "exact_name_match": exact_name_match,
+            "keyword_coverage": keyword_coverage,
+            "code_structure_match": code_structure_match,
+            "file_path_relevance": file_path_relevance,
+        },
+    )
+
+
+def _is_definition_context(line: str) -> bool:
+    """判断代码行是否为函数/类定义上下文。
+
+    检测 Python 定义关键字前缀：def, class, async def
+
+    Args:
+        line: 代码行文本
+
+    Returns:
+        如果该行以 def/class/async def 开头（忽略前导空白）则返回 True
+    """
+    stripped = line.lstrip()
+    return stripped.startswith(("def ", "class ", "async def "))
 
 
 # ── 文档解析 ──
@@ -262,10 +398,8 @@ def _search_in_code(
 ) -> tuple[list[MatchedFile], Confidence, DriftType]:
     """在代码中搜索与文档声明匹配的实现。
 
-    搜索策略：
-    1. 精确匹配：在模块公开 API 或文件内容中找到完全匹配
-    2. 部分匹配：关键词部分匹配
-    3. 未找到：无任何匹配
+    使用 _compute_confidence_score 多因子加权评分算法对每个候选文件
+    计算综合得分，按得分排序返回最佳匹配。
 
     Args:
         claim_name: 文档中的能力声明名称
@@ -275,77 +409,79 @@ def _search_in_code(
     Returns:
         (匹配文件列表, 置信度, drift类型) 元组
     """
-    matched_files: list[MatchedFile] = []
     keywords = _extract_keywords(claim_name)
-    claim_lower = _normalize_name(claim_name)
 
     if not keywords:
         return [], Confidence.LOW, DriftType.MISSING
 
-    # 策略 1：在模块公开 API 中精确匹配
+    # 构建模块路径 → public_api 的映射，用于评分
+    module_api_map: dict[str, list[str]] = {}
     for mod in code_modules:
-        for api in mod.public_api:
-            api_lower = _normalize_name(api)
-            if claim_lower == api_lower or claim_lower in api_lower or api_lower in claim_lower:
-                matched_files.append(MatchedFile(
-                    file=mod.path,
-                    line=0,
-                    confidence=Confidence.HIGH,
-                ))
+        module_api_map[mod.path] = mod.public_api
 
-    if matched_files:
-        return matched_files, Confidence.HIGH, DriftType.EXACT
+    # 收集所有候选文件及其得分
+    scored_candidates: list[tuple[str, ConfidenceScore, int]] = []
 
-    # 策略 2：在文件内容中搜索关键词
-    partial_matches: list[MatchedFile] = []
+    # 对每个代码文件计算综合得分
     for filepath, content in code_files_content.items():
-        content_lower = content.lower()
-        matched_count = sum(1 for kw in keywords if kw in content_lower)
-        match_ratio = matched_count / len(keywords) if keywords else 0
+        # 查找该文件所属模块的 public_api
+        public_api = module_api_map.get(filepath, [])
+        # 也检查父目录路径匹配的模块
+        if not public_api:
+            for mod_path, mod_api in module_api_map.items():
+                if filepath.startswith(mod_path):
+                    public_api = mod_api
+                    break
 
-        if match_ratio >= 0.8:
-            # 高匹配度 - 尝试找到具体行号
+        score_result = _compute_confidence_score(
+            claim_name, content, filepath, public_api,
+        )
+
+        if score_result.score > 0:
             line_num = _find_keyword_line(content, keywords)
-            partial_matches.append(MatchedFile(
-                file=filepath,
-                line=line_num,
-                confidence=Confidence.HIGH,
-            ))
-        elif match_ratio >= 0.5:
-            line_num = _find_keyword_line(content, keywords)
-            partial_matches.append(MatchedFile(
-                file=filepath,
-                line=line_num,
-                confidence=Confidence.MEDIUM,
-            ))
+            scored_candidates.append((filepath, score_result, line_num))
 
-    if partial_matches:
-        # 按置信度排序，取最高的
-        best_confidence = max(m.confidence.value for m in partial_matches)
-        if best_confidence == Confidence.HIGH.value:
-            return partial_matches, Confidence.HIGH, DriftType.EXACT
-        return partial_matches, Confidence.MEDIUM, DriftType.PARTIAL
+    # 也检查模块路径本身（模块可能不在 code_files_content 中）
+    for mod in code_modules:
+        if mod.path in code_files_content:
+            continue  # 已经在上面处理过
+        # 对模块路径使用空内容但有 public_api 进行评分
+        score_result = _compute_confidence_score(
+            claim_name, "", mod.path, mod.public_api,
+        )
+        if score_result.score > 0:
+            scored_candidates.append((mod.path, score_result, 0))
 
-    # 策略 3：宽松关键词搜索
-    loose_matches: list[MatchedFile] = []
-    for filepath, content in code_files_content.items():
-        content_lower = content.lower()
-        matched_count = sum(1 for kw in keywords if kw in content_lower)
-        if matched_count > 0 and len(keywords) > 0:
-            match_ratio = matched_count / len(keywords)
-            if match_ratio >= 0.3:
-                line_num = _find_keyword_line(content, keywords)
-                loose_matches.append(MatchedFile(
-                    file=filepath,
-                    line=line_num,
-                    confidence=Confidence.LOW,
-                ))
+    if not scored_candidates:
+        return [], Confidence.HIGH, DriftType.MISSING
 
-    if loose_matches:
-        return loose_matches, Confidence.LOW, DriftType.PARTIAL
+    # 按得分从高到低排序
+    scored_candidates.sort(key=lambda x: x[1].score, reverse=True)
 
-    # 未找到任何匹配
-    return [], Confidence.HIGH, DriftType.MISSING
+    # 取最佳得分确定整体置信度和 drift 类型
+    best_score = scored_candidates[0][1]
+
+    # 确定 drift 类型
+    if best_score.factors.get("exact_name_match", 0) == 1.0:
+        drift_type = DriftType.EXACT
+    elif best_score.confidence == Confidence.HIGH:
+        drift_type = DriftType.EXACT
+    elif best_score.confidence in (Confidence.MEDIUM, Confidence.LOW):
+        drift_type = DriftType.PARTIAL
+    else:
+        drift_type = DriftType.MISSING
+
+    # 构建匹配文件列表，只保留有意义的匹配（score > 0）
+    matched_files: list[MatchedFile] = []
+    for filepath, score_result, line_num in scored_candidates:
+        matched_files.append(MatchedFile(
+            file=filepath,
+            line=line_num,
+            confidence=score_result.confidence,
+        ))
+
+    overall_confidence = best_score.confidence
+    return matched_files, overall_confidence, drift_type
 
 
 def _find_keyword_line(content: str, keywords: list[str]) -> int:
@@ -511,7 +647,10 @@ def check_reverse_drift(
 ) -> list[ReverseDrift]:
     """扫描代码中的公开 API，检查文档中是否有对应记录。
 
-    对每个模块的 public_api 中的每个 API，在文档声明中搜索匹配。
+    对每个模块的 public_api 中的每个 API，使用 _compute_confidence_score
+    多因子加权评分算法在文档声明中搜索匹配，确保与 Forward Drift 检测
+    使用相同的评分算法。
+
     未在文档中记录的能力标记为 ReverseDrift。
 
     Args:
@@ -524,51 +663,41 @@ def check_reverse_drift(
     """
     reverse_drifts: list[ReverseDrift] = []
 
-    # 构建文档声明的关键词索引，用于快速匹配
-    claim_keywords_map: list[tuple[DocClaim, list[str]]] = []
-    for claim in doc_claims:
-        kws = _extract_keywords(claim.name)
-        claim_keywords_map.append((claim, kws))
+    # 收集所有文档声明名称作为 "public_api" 列表，用于精确名称匹配因子
+    all_claim_names = [c.name for c in doc_claims]
 
-    # 所有文档声明的标准化名称集合
-    claim_names_normalized = {_normalize_name(c.name) for c in doc_claims}
+    # 将所有文档声明名称拼接为 "文件内容"，用于关键词覆盖率因子
+    # 每个声明名称作为一行，模拟代码文件内容供评分算法使用
+    doc_content_for_scoring = "\n".join(all_claim_names)
+
+    # 构建文档文件路径字符串，用于文件路径相关性因子
+    doc_file_paths = " ".join({c.doc_file for c in doc_claims}) if doc_claims else ""
 
     for mod in code_modules:
         for api_name in mod.public_api:
-            api_normalized = _normalize_name(api_name)
             api_keywords = _extract_keywords(api_name)
 
             if not api_keywords:
                 continue
 
-            # 策略 1：精确匹配 — API 名称与某个文档声明完全匹配
-            exact_match = False
+            # 使用与 Forward Drift 相同的多因子加权评分算法
+            score_result = _compute_confidence_score(
+                claim_name=api_name,
+                file_content=doc_content_for_scoring,
+                file_path=doc_file_paths,
+                module_public_api=all_claim_names,
+            )
+
+            # 如果评分达到 MEDIUM 或 HIGH，认为文档中有对应记录
+            if score_result.confidence in (Confidence.HIGH, Confidence.MEDIUM):
+                continue
+
+            # 评分为 LOW — 文档中未充分记录该 API，标记为 reverse drift
             matched_doc_files: list[str] = []
-            for claim_norm in claim_names_normalized:
-                if api_normalized == claim_norm or api_normalized in claim_norm or claim_norm in api_normalized:
-                    exact_match = True
-                    break
+            if score_result.score > 0:
+                # 收集有部分匹配的文档文件
+                matched_doc_files = list({c.doc_file for c in doc_claims})
 
-            if exact_match:
-                continue
-
-            # 策略 2：关键词匹配 — API 的关键词在文档声明中有足够覆盖
-            keyword_match = False
-            for claim, claim_kws in claim_keywords_map:
-                if not claim_kws:
-                    continue
-                # 检查 API 关键词是否被文档声明覆盖
-                matched_count = sum(1 for kw in api_keywords if kw in claim_kws)
-                ratio = matched_count / len(api_keywords)
-                if ratio >= 0.5:
-                    keyword_match = True
-                    matched_doc_files.append(claim.doc_file)
-                    break
-
-            if keyword_match:
-                continue
-
-            # 未匹配 — 标记为 reverse drift
             reverse_drifts.append(ReverseDrift(
                 file=mod.path,
                 location=f"module:{mod.name}",

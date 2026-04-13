@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 
 from .code_reader import CodeReaderInput, scan_project
 from .models import ApiRoute, CodeReaderOutput, Module
+from .template_engine import TemplateEngine
 
 
 def generate_index(project_name: str) -> str:
@@ -357,13 +358,114 @@ def update_gitignore(project_root: str) -> bool:
     return True
 
 
+def _build_template_variables(
+    project_name: str,
+    output: CodeReaderOutput,
+) -> dict[str, str]:
+    """从 CodeReaderOutput 构建模板变量字典。
+
+    所有变量值均为已格式化的 Markdown 文本字符串。
+
+    Args:
+        project_name: 项目名称
+        output: code-reader 扫描结果
+
+    Returns:
+        模板变量字典，包含 project_name, generated_at, modules,
+        capabilities, entry_points, api_routes, dependencies
+    """
+    info = output.project_info
+    modules = output.modules
+    entry_points = output.entry_points
+    api_routes = output.api_routes
+    deps = output.dependencies
+
+    # modules: 模块信息（Markdown 格式）
+    if modules:
+        mod_lines = []
+        for mod in modules:
+            layer = mod.layer or "未分类"
+            path = mod.path or "—"
+            apis = "、".join(mod.public_api) if mod.public_api else "—"
+            mod_lines.append(f"- **{mod.name}**（{layer}）：`{path}`，公开 API：{apis}")
+        modules_md = "\n".join(mod_lines)
+    else:
+        modules_md = "暂无模块信息。"
+
+    # entry_points: 入口文件列表
+    if entry_points:
+        ep_lines = []
+        for ep in entry_points:
+            ep_lines.append(f"- `{ep.file}`（{ep.type}）：{ep.description or '—'}")
+        entry_points_md = "\n".join(ep_lines)
+    else:
+        entry_points_md = "暂无入口文件信息。"
+
+    # api_routes: API 路由列表
+    if api_routes:
+        route_lines = []
+        for route in api_routes:
+            route_lines.append(
+                f"- `{route.method} {route.path}` → `{route.handler}`"
+                + (f"：{route.description}" if route.description else "")
+            )
+        api_routes_md = "\n".join(route_lines)
+    else:
+        api_routes_md = "暂无 API 路由信息。"
+
+    # dependencies: 依赖列表
+    if deps.direct:
+        dep_lines = [f"- {d}" for d in deps.direct]
+        dependencies_md = "\n".join(dep_lines)
+    else:
+        dependencies_md = "暂无依赖信息。"
+
+    # capabilities: 能力矩阵内容
+    cap_sections: list[str] = []
+    for mod in modules:
+        section_lines = [f"## {mod.name}"]
+        if mod.public_api:
+            for api in mod.public_api:
+                section_lines.append(f"- [ ] {api}")
+        else:
+            section_lines.append("- [ ] （暂无检测到的能力项）")
+        cap_sections.append("\n".join(section_lines))
+
+    if api_routes:
+        route_section_lines = ["## API 路由"]
+        for route in api_routes:
+            desc = f"{route.method} {route.path}"
+            if route.description:
+                desc += f" — {route.description}"
+            route_section_lines.append(f"- [ ] {desc}")
+        cap_sections.append("\n".join(route_section_lines))
+
+    if not cap_sections:
+        capabilities_md = "暂无检测到的能力项。请执行 `sync` 命令更新。"
+    else:
+        capabilities_md = "\n\n".join(cap_sections)
+
+    # generated_at: 当前日期
+    generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    return {
+        "project_name": project_name,
+        "generated_at": generated_at,
+        "modules": modules_md,
+        "capabilities": capabilities_md,
+        "entry_points": entry_points_md,
+        "api_routes": api_routes_md,
+        "dependencies": dependencies_md,
+    }
+
+
 def init_docs(project_root: str) -> dict:
     """主函数：调用 code-reader 扫描项目并生成所有文档。
 
     流程：
     1. 调用 code-reader 扫描项目
     2. 创建 .docs/ 目录
-    3. 生成全部 6 个文档文件
+    3. 使用 TemplateEngine 渲染并生成全部 6 个文档文件
     4. 更新 .gitignore
 
     Args:
@@ -386,22 +488,25 @@ def init_docs(project_root: str) -> dict:
     docs_dir = os.path.join(project_root, ".docs")
     os.makedirs(docs_dir, exist_ok=True)
 
-    # 3. 生成全部文档
+    # 3. 使用 TemplateEngine 渲染全部文档
+    engine = TemplateEngine(project_root)
+    variables = _build_template_variables(project_name, output)
+
+    template_names = [
+        "0_INDEX.md",
+        "1_ARCHITECTURE.md",
+        "2_CAPABILITIES.md",
+        "3_ROADMAP.md",
+        "4_DECISIONS.md",
+        "5_CHANGELOG.md",
+    ]
+
     files_generated = []
-
-    doc_files = {
-        "0_INDEX.md": generate_index(project_name),
-        "1_ARCHITECTURE.md": generate_architecture(output),
-        "2_CAPABILITIES.md": generate_capabilities(output),
-        "3_ROADMAP.md": generate_roadmap(project_name),
-        "4_DECISIONS.md": generate_decisions(project_name),
-        "5_CHANGELOG.md": generate_changelog(project_name),
-    }
-
-    for filename, content in doc_files.items():
-        filepath = os.path.join(docs_dir, filename)
+    for template_name in template_names:
+        result = engine.render(template_name, variables)
+        filepath = os.path.join(docs_dir, template_name)
         with open(filepath, "w", encoding="utf-8") as f:
-            f.write(content)
+            f.write(result.content)
         files_generated.append(filepath)
 
     # 4. 更新 .gitignore

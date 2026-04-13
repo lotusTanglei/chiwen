@@ -338,11 +338,11 @@ class TestInitDocs:
     def test_architecture_five_sections(self, tmp_project: Path):
         init_docs(str(tmp_project))
         arch = (tmp_project / ".docs" / "1_ARCHITECTURE.md").read_text()
+        # 模板引擎生成的架构文档包含 4 个章节（与内置模板一致）
         assert "## 1. 技术选型" in arch
-        assert "## 2. 分层架构" in arch
-        assert "## 3. 模块职责映射" in arch
-        assert "## 4. 核心执行流程" in arch
-        assert "## 5. ADR 快速索引" in arch
+        assert "## 2. 入口文件" in arch
+        assert "## 3. API 路由" in arch
+        assert "## 4. 依赖" in arch
 
     def test_gitignore_updated(self, tmp_project: Path):
         init_docs(str(tmp_project))

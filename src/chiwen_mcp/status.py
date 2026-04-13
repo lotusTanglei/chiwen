@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 from .doc_code_lens import run_doc_code_lens
 from .git_changelog import run_git_changelog
@@ -72,6 +73,121 @@ def _filter_stale_docs(stale_files: list[StaleFile]) -> list[StaleFile]:
         if is_doc or is_doc_ext:
             result.append(sf)
     return result
+
+
+def _render_report_md(report: HealthReport) -> str:
+    """将 HealthReport 渲染为 Markdown 文本。
+
+    章节结构：
+    1. 标题 + 生成时间戳（ISO 8601）
+    2. 概览：同步率（百分比，一位小数）、总检查项、drift 项数
+    3. Forward Drift 详情表格（文档声明、文档文件、drift 类型、置信度）
+    4. Reverse Drift 详情表格（代码文件、能力名称、是否已记录）
+    5. 活跃贡献者列表（或「Git 信息不可用」提示）
+    6. 过期文档列表（或「Git 信息不可用」提示）
+    """
+    lines: list[str] = []
+
+    # 1. 标题 + ISO 8601 时间戳
+    timestamp = datetime.now(timezone.utc).isoformat()
+    lines.append("# 文档健康度报告")
+    lines.append("")
+    lines.append(f"> 生成时间：{timestamp}")
+    lines.append("")
+
+    # 2. 概览
+    sync_pct = f"{report.sync_rate * 100:.1f}%"
+    lines.append("## 概览")
+    lines.append("")
+    lines.append(f"- 同步率：{sync_pct}")
+    lines.append(f"- 总检查项：{report.total_checked}")
+    lines.append(f"- Drift 项数：{report.drifted}")
+    lines.append("")
+
+    # 3. Forward Drift 详情表格
+    lines.append("## Forward Drift 详情")
+    lines.append("")
+    forward_drifts = [d for d in report.pending_drifts if isinstance(d, ForwardDrift)]
+    if forward_drifts:
+        lines.append("| 文档声明 | 文档文件 | drift 类型 | 置信度 |")
+        lines.append("| --- | --- | --- | --- |")
+        for d in forward_drifts:
+            lines.append(
+                f"| {d.doc_claim} | {d.doc_file} | {d.drift_type.value} | {d.confidence.value} |"
+            )
+    else:
+        lines.append("无 Forward Drift。")
+    lines.append("")
+
+    # 4. Reverse Drift 详情表格
+    lines.append("## Reverse Drift 详情")
+    lines.append("")
+    reverse_drifts = [d for d in report.pending_drifts if isinstance(d, ReverseDrift)]
+    if reverse_drifts:
+        lines.append("| 代码文件 | 能力名称 | 是否已记录 |")
+        lines.append("| --- | --- | --- |")
+        for d in reverse_drifts:
+            documented = "是" if d.doc_mentioned else "否"
+            lines.append(f"| {d.file} | {d.capability} | {documented} |")
+    else:
+        lines.append("无 Reverse Drift。")
+    lines.append("")
+
+    # 5. 活跃贡献者列表
+    lines.append("## 活跃贡献者")
+    lines.append("")
+    if not report.git_available:
+        lines.append("Git 信息不可用")
+    elif report.active_contributors:
+        for c in report.active_contributors:
+            lines.append(f"- {c.name}（{c.email}）— {c.commits} 次提交")
+    else:
+        lines.append("无活跃贡献者。")
+    lines.append("")
+
+    # 6. 过期文档列表
+    lines.append("## 过期文档")
+    lines.append("")
+    if not report.git_available:
+        lines.append("Git 信息不可用")
+    elif report.stale_docs:
+        for s in report.stale_docs:
+            lines.append(f"- {s.path}（{s.days_since_change} 天未更新）")
+    else:
+        lines.append("无过期文档。")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+def export_markdown(
+    report: HealthReport,
+    output_path: str | None = None,
+    project_root: str = "",
+) -> str:
+    """将 HealthReport 渲染为 Markdown 并写入文件。
+
+    Args:
+        report: 健康度报告
+        output_path: 输出文件路径，None 则写入 .docs/STATUS_REPORT.md
+        project_root: 项目根目录（用于计算默认输出路径）
+
+    Returns:
+        渲染后的 Markdown 文本
+    """
+    md_text = _render_report_md(report)
+
+    if output_path is None:
+        output_path = os.path.join(project_root, ".docs", "STATUS_REPORT.md")
+
+    parent_dir = os.path.dirname(output_path)
+    if parent_dir:
+        os.makedirs(parent_dir, exist_ok=True)
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(md_text)
+
+    return md_text
 
 
 def get_status(project_root: str) -> HealthReport:
