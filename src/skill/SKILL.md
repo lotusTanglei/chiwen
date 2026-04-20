@@ -19,11 +19,12 @@ inclusion: manual
 
 ## MCP 工具
 
-你通过标准 MCP 协议调用以下 3 个工具，不依赖任何特定 IDE 或平台的私有接口。
+你通过标准 MCP 协议调用以下工具，不依赖任何特定 IDE 或平台的私有接口。
 
 | 工具名 | 职责 | 何时调用 |
 |:--|:--|:--|
-| `code-reader` | 深度扫描代码库，返回结构化项目知识 | init |
+| `code-reader` | 深度扫描代码库，返回结构化项目知识（CodeReaderOutput） | init |
+| `init-docs` | 生成骨架文件（0_INDEX、3_ROADMAP、4_DECISIONS、5_CHANGELOG），返回 `skipped_for_llm` | init |
 | `doc-code-lens` | 文档与代码双向对比，发现 drift | sync, status |
 | `git-changelog` | 从 Git 历史提取协作知识 | status |
 
@@ -61,40 +62,59 @@ inclusion: manual
 
 触发条件：用户要求初始化项目文档，或用户说 "init"。
 
-流程：
+流程分为三个阶段：**代码扫描 → 骨架生成 → LLM 撰写核心文档**。
+
+#### 阶段一：前置检查与代码扫描
 
 1. **检查 `.docs/` 是否已存在**
    - 如果已存在，提示用户选择：覆盖 / 合并 / 取消
-   - 用户选择取消则终止流程
+   - 用户选择取消 → 终止流程
+   - 记住用户的选择，后续步骤需要用到
 
-2. **优先调用 `init-docs` MCP（确定性生成）**
+2. **调用 `code-reader` MCP 扫描项目**
    - 参数：`project_root` = 当前项目根目录绝对路径
-   - 若用户选择覆盖：传 `mode=overwrite`（兼容参数：`overwrite=true`）
+   - 获取返回的 `CodeReaderOutput`（JSON），包含 project_info、modules、entry_points、api_routes、dependencies、structure 等字段
+   - 将 `CodeReaderOutput` 保存在上下文中，后续撰写核心文档时使用
+   - 若调用失败 → 向用户展示错误信息，终止 init 流程
+
+#### 阶段二：骨架文件生成（确定性）
+
+3. **调用 `init-docs` MCP 生成骨架文件**
+   - 参数：`project_root` = 当前项目根目录绝对路径
+   - 若用户选择覆盖：传 `mode=overwrite`
    - 若用户选择合并（仅补齐缺失文件）：传 `mode=fill_missing`
-   - 若 MCP 不支持 `init-docs`（旧版本），再退化为调用 `code-reader` 并由你生成文档内容
+   - `init-docs` 会生成 4 个骨架文件：0_INDEX.md、3_ROADMAP.md、4_DECISIONS.md、5_CHANGELOG.md
+   - `init-docs` 会自动处理 `.gitignore` 和 `.gitattributes` 更新
+   - 若调用失败 → 向用户展示错误信息，终止 init 流程
 
-3. **创建 `.docs/` 目录**
+4. **检查 `skipped_for_llm` 字段**
+   - `init-docs` 返回结果中包含 `skipped_for_llm` 字段（值为 `["1_ARCHITECTURE.md", "2_CAPABILITIES.md"]`）
+   - 确认这些文件需要由你（LLM）撰写
 
-4. **生成 `0_INDEX.md`** — 文档清单表格 + 外部资源链接区域
+#### 阶段三：LLM 撰写核心文档
 
-5. **生成 `1_ARCHITECTURE.md`** — 基于扫描结果，包含五个章节：
-   1. 技术选型
-   2. 分层架构
-   3. 模块职责映射（表格）
-   4. 核心执行流程
-   5. ADR 快速索引
+5. **检查自定义模板**
+   - 检查 `.docs/templates/1_ARCHITECTURE.md` 是否存在
+   - 检查 `.docs/templates/2_CAPABILITIES.md` 是否存在
+   - 如果存在，读取模板内容作为格式参考（详见「自定义模板参考机制」）
+   - 如果不存在，使用下方默认撰写指引
 
-6. **生成 `2_CAPABILITIES.md`** — 按模块分组，**所有能力项标记为 `[ ]`，禁止 `[x]`**
+6. **撰写 `1_ARCHITECTURE.md`**
+   - 基于步骤 2 获取的 `CodeReaderOutput` 撰写
+   - 严格遵循「Architecture_Doc 撰写指引」章节的格式规范
+   - 将撰写结果写入 `.docs/1_ARCHITECTURE.md`
 
-7. **生成 `3_ROADMAP.md`** — 按版本号分组（当前版本、下一版本、远期愿景）
+7. **撰写 `2_CAPABILITIES.md`**
+   - 基于步骤 2 获取的 `CodeReaderOutput` 撰写
+   - 严格遵循「Capabilities_Doc 撰写指引」章节的格式规范
+   - 将撰写结果写入 `.docs/2_CAPABILITIES.md`
 
-8. **生成 `4_DECISIONS.md`** — ADR 格式模板（状态/背景/决策/后果）
+#### 完成
 
-9. **生成 `5_CHANGELOG.md`** — 按日期分组的变更记录模板
-
-10. **更新 `.gitignore`** — 追加 `.docs/users/*/notepad.md`（已存在则跳过）
-
-11. **展示结果摘要**
+8. **展示结果摘要**
+   - 列出所有生成的文件（骨架文件 + LLM 撰写的文件）
+   - 展示 `code-reader` 扫描统计信息（模块数、文件数等）
+   - 标注哪些文件由 `init-docs` 生成，哪些由 LLM 撰写
 
 ---
 
@@ -148,3 +168,127 @@ inclusion: manual
    - 参数：`project_root` = 当前项目根目录绝对路径
    - 可选：`write_markdown=true` 将报告写入 `.docs/STATUS_REPORT.md`
 3. 若 MCP 不支持 `status-report`（旧版本），再退化为调用 `doc-code-lens` + `git-changelog` 并由你汇总生成报告
+
+---
+
+## LLM 撰写指引
+
+以下指引定义了 init 流程中由你（LLM）撰写的核心文档的格式规范。结构必须固定，内容描述由你自由发挥。
+
+### Architecture_Doc 撰写指引
+
+撰写 `1_ARCHITECTURE.md` 时，严格遵循以下规范。
+
+#### 章节结构（固定，不可修改标题）
+
+文档必须包含且仅包含以下五个章节，按顺序排列：
+
+```
+## 1. 技术选型
+## 2. 分层架构
+## 3. 模块职责映射
+## 4. 核心执行流程
+## 5. ADR 快速索引
+```
+
+标题格式必须是 `## N. 标题文本`，N 为阿拉伯数字序号。不要使用其他标题格式。
+
+#### 各章节内容要求
+
+**`## 1. 技术选型`**
+- 基于 `CodeReaderOutput.dependencies` 和 `CodeReaderOutput.project_info` 描述项目使用的语言、框架、核心依赖
+- 用简洁的散文或列表说明选型理由
+
+**`## 2. 分层架构`**
+- 基于 `CodeReaderOutput.structure` 和 `CodeReaderOutput.modules` 描述项目的分层结构
+- 可使用文字描述或 ASCII 图
+
+**`## 3. 模块职责映射`**
+- 使用三列 Markdown 表格，表头必须为：
+
+```
+| 层级 | 核心文件/目录 | 职责说明 |
+|:--|:--|:--|
+```
+
+- 基于 `CodeReaderOutput.modules` 填充表格行
+- 「层级」列：模块所属的架构层（如 MCP 工具层、核心逻辑层、配置层等）
+- 「核心文件/目录」列：模块的文件路径，用反引号包裹（如 `src/chiwen_mcp/code_reader.py`）
+- 「职责说明」列：人类可理解的职责描述，不是裸函数名
+- 每个模块一行，按架构层分组排列
+
+**兼容性约束**：此表格必须能被 `parse_architecture()` 正确解析。该函数的解析逻辑为：
+- 检测 `## .*模块职责映射` 正则匹配的章节标题
+- 跳过表头行（含「层级」关键词）和分隔行（含 `---`）
+- 解析 `|层级|核心文件/目录|职责说明|` 格式的三列表格行
+
+**`## 4. 核心执行流程`**
+- 基于 `CodeReaderOutput.entry_points` 和模块间调用关系描述系统的启动和请求处理流程
+- 如果 `entry_points` 为空，描述主要模块的协作流程
+- 可使用编号步骤、流程图或时序描述
+
+**`## 5. ADR 快速索引`**
+- 如果 `4_DECISIONS.md` 中已有 ADR 记录，列出索引
+- 如果没有，写一句说明（如「暂无 ADR 记录，请在 4_DECISIONS.md 中添加」）
+
+### Capabilities_Doc 撰写指引
+
+撰写 `2_CAPABILITIES.md` 时，严格遵循以下规范。
+
+#### 顶部警告文本（固定，必须保留）
+
+文档第一行必须是以下警告文本，原样复制：
+
+```
+> 本文件由 AI 自动维护，仅对真实可用能力打勾。
+> 虚假勾选（文档写了代码没实现）是最高级别的文档事故。
+```
+
+#### 分组规则
+
+- 按功能域分组，每个分组使用二级标题：`## 分组标题`
+- 分组标题应反映功能域（如「MCP 工具」「核心逻辑」「配置管理」），不要使用文件名作为分组标题
+- 基于 `CodeReaderOutput.modules` 的功能特征进行分组，相关模块归入同一分组
+- 如果 `CodeReaderOutput.api_routes` 非空，将 API 路由作为独立分组（如 `## API 路由`）
+
+#### 能力项格式（固定）
+
+每个能力项必须使用以下格式：
+
+```
+- [ ] 能力描述
+```
+
+规则：
+- 所有能力项必须标记为 `[ ]`（未确认状态），**禁止使用 `[x]`**
+- 能力描述必须是人类可理解的自然语言，不是裸函数名
+- 好的示例：`- [ ] code-reader — 深度扫描代码库，返回项目信息、模块结构、入口文件、API 路由、依赖`
+- 坏的示例：`- [ ] scan_project_structure()`
+- 描述文本中不要包含独立的 `[x]` 或 `[ ]` 字符（会干扰正则匹配）
+
+#### 分组与能力项之间的格式
+
+- 分组标题和能力项之间可以有空行
+- 能力项之间不要插入引用块（`>`）或其他非能力项格式的行
+- 每个分组下至少有一个能力项
+
+**兼容性约束**：此文档必须能被 `parse_capabilities()` 正确解析。该函数的解析逻辑为：
+- 模块分组：匹配 `^##\s+(.+)$` 正则提取分组标题
+- 能力项：匹配 `^-\s+\[([ xX])\]\s+(.+)$` 正则提取 checkbox 状态和描述文本
+- 废弃项：匹配 `^-\s+\(废弃\)\s+(.+)$` 正则
+
+### 自定义模板参考机制
+
+在撰写 `1_ARCHITECTURE.md` 和 `2_CAPABILITIES.md` 之前，执行以下检查：
+
+1. 检查 `.docs/templates/1_ARCHITECTURE.md` 是否存在
+   - 如果存在：读取模板内容，将其作为格式参考。按照模板的结构和风格撰写，但内容必须基于 `CodeReaderOutput`
+   - 如果不存在：使用上方「Architecture_Doc 撰写指引」的默认规范
+
+2. 检查 `.docs/templates/2_CAPABILITIES.md` 是否存在
+   - 如果存在：读取模板内容，将其作为格式参考。按照模板的结构和风格撰写，但内容必须基于 `CodeReaderOutput`
+   - 如果不存在：使用上方「Capabilities_Doc 撰写指引」的默认规范
+
+3. 如果自定义模板读取失败（文件损坏、编码错误等），忽略模板，回退到默认撰写指引
+
+注意：即使使用自定义模板，仍然必须满足兼容性约束（`parse_architecture()` 和 `parse_capabilities()` 能正确解析）。

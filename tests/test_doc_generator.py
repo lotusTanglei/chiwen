@@ -152,7 +152,7 @@ class TestGenerateArchitecture:
 
     def test_module_mapping_table(self, sample_output: CodeReaderOutput):
         content = generate_architecture(sample_output)
-        assert "| 层级 | 核心文件/目录 | 职责说明 |" in content
+        assert "## 3. 模块职责映射" in content
         assert "auth" in content
         assert "db" in content
 
@@ -308,19 +308,22 @@ class TestInitDocs:
         init_docs(str(tmp_project))
         assert (tmp_project / ".docs").is_dir()
 
-    def test_generates_all_files(self, tmp_project: Path):
+    def test_generates_skeleton_files(self, tmp_project: Path):
+        """init_docs 只生成 4 个骨架文件，跳过 LLM 核心文档。"""
         result = init_docs(str(tmp_project))
         docs_dir = tmp_project / ".docs"
-        expected_files = [
+        # 骨架文件应存在
+        skeleton_files = [
             "0_INDEX.md",
-            "1_ARCHITECTURE.md",
-            "2_CAPABILITIES.md",
             "3_ROADMAP.md",
             "4_DECISIONS.md",
             "5_CHANGELOG.md",
         ]
-        for fname in expected_files:
+        for fname in skeleton_files:
             assert (docs_dir / fname).exists(), f"{fname} should exist"
+        # LLM 核心文档不应由 init_docs 生成
+        assert not (docs_dir / "1_ARCHITECTURE.md").exists()
+        assert not (docs_dir / "2_CAPABILITIES.md").exists()
 
     def test_result_summary(self, tmp_project: Path):
         result = init_docs(str(tmp_project))
@@ -328,24 +331,63 @@ class TestInitDocs:
         assert "scan_meta" in result
         assert "project_name" in result
         assert "gitignore_updated" in result
-        assert len(result["files"]) == 6
-
-    def test_capabilities_no_checked(self, tmp_project: Path):
-        init_docs(str(tmp_project))
-        caps = (tmp_project / ".docs" / "2_CAPABILITIES.md").read_text()
-        assert "[x]" not in caps
-
-    def test_architecture_five_sections(self, tmp_project: Path):
-        init_docs(str(tmp_project))
-        arch = (tmp_project / ".docs" / "1_ARCHITECTURE.md").read_text()
-        # 模板引擎生成的架构文档包含 4 个章节（与内置模板一致）
-        assert "## 1. 技术选型" in arch
-        assert "## 2. 入口文件" in arch
-        assert "## 3. API 路由" in arch
-        assert "## 4. 依赖" in arch
+        assert "skipped_for_llm" in result
+        assert result["skipped_for_llm"] == ["1_ARCHITECTURE.md", "2_CAPABILITIES.md"]
+        assert len(result["files"]) == 4
 
     def test_gitignore_updated(self, tmp_project: Path):
         init_docs(str(tmp_project))
         gitignore = tmp_project / ".gitignore"
         assert gitignore.exists()
         assert ".docs/users/*/notepad.md" in gitignore.read_text()
+
+    def test_overwrite_mode_skips_llm_files(self, tmp_project: Path):
+        """mode=overwrite 时，LLM 核心文档不被覆盖也不被生成。"""
+        # 先初始化一次
+        init_docs(str(tmp_project))
+        docs_dir = tmp_project / ".docs"
+        # 手动创建 LLM 文件，模拟 LLM 已撰写
+        arch_file = docs_dir / "1_ARCHITECTURE.md"
+        caps_file = docs_dir / "2_CAPABILITIES.md"
+        arch_file.write_text("LLM 撰写的架构文档", encoding="utf-8")
+        caps_file.write_text("LLM 撰写的能力矩阵", encoding="utf-8")
+        # 以 overwrite 模式重新初始化
+        result = init_docs(str(tmp_project), mode="overwrite")
+        # LLM 文件内容应保持不变
+        assert arch_file.read_text(encoding="utf-8") == "LLM 撰写的架构文档"
+        assert caps_file.read_text(encoding="utf-8") == "LLM 撰写的能力矩阵"
+        # 返回结果中不应包含 LLM 文件
+        generated_names = [os.path.basename(f) for f in result["files"]]
+        assert "1_ARCHITECTURE.md" not in generated_names
+        assert "2_CAPABILITIES.md" not in generated_names
+
+    def test_fill_missing_mode_skips_llm_files(self, tmp_project: Path):
+        """mode=fill_missing 时，即使 LLM 文件不存在也不生成。"""
+        # 先初始化一次
+        init_docs(str(tmp_project))
+        docs_dir = tmp_project / ".docs"
+        # 确认 LLM 文件不存在
+        assert not (docs_dir / "1_ARCHITECTURE.md").exists()
+        assert not (docs_dir / "2_CAPABILITIES.md").exists()
+        # 以 fill_missing 模式再次调用
+        result = init_docs(str(tmp_project), mode="fill_missing")
+        # LLM 文件仍然不应存在
+        assert not (docs_dir / "1_ARCHITECTURE.md").exists()
+        assert not (docs_dir / "2_CAPABILITIES.md").exists()
+        # 返回结果中不应包含 LLM 文件
+        generated_names = [os.path.basename(f) for f in result["files"]]
+        assert "1_ARCHITECTURE.md" not in generated_names
+        assert "2_CAPABILITIES.md" not in generated_names
+
+    def test_gitignore_and_gitattributes_unaffected_by_llm_skip(self, tmp_project: Path):
+        """确保 .gitignore 和 .gitattributes 更新逻辑不受 LLM 文件跳过影响。"""
+        result = init_docs(str(tmp_project))
+        assert result["gitignore_updated"] is True
+        assert result["gitattributes_updated"] is True
+        gitignore = tmp_project / ".gitignore"
+        assert ".docs/users/*/notepad.md" in gitignore.read_text()
+        gitattributes = tmp_project / ".gitattributes"
+        assert gitattributes.exists()
+        content = gitattributes.read_text()
+        assert ".docs/2_CAPABILITIES.md merge=union" in content
+        assert ".docs/5_CHANGELOG.md merge=union" in content

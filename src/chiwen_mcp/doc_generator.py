@@ -8,11 +8,15 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 
-from .code_reader import CodeReaderInput, scan_project
-from .models import ApiRoute, CodeReaderOutput, Module
+from .code_reader import CodeReaderInput, _extract_public_api_by_file, scan_project
+from .models import ApiRoute, CodeReaderOutput, FileNode, Module
 from .collaboration import acquire_docs_lock, git_head, is_git_repo, release_docs_lock, write_state
 from .template_engine import TemplateEngine
+
+# 由 LLM 撰写的核心文档，init_docs() 跳过这些文件的生成
+LLM_GENERATED_FILES: set[str] = {"1_ARCHITECTURE.md", "2_CAPABILITIES.md"}
 
 
 def generate_index(project_name: str) -> str:
@@ -49,13 +53,15 @@ def generate_index(project_name: str) -> str:
 """
 
 
-def generate_architecture(code_reader_output: CodeReaderOutput) -> str:
+def generate_architecture(code_reader_output: CodeReaderOutput, project_root: str = "") -> str:
     """生成 1_ARCHITECTURE.md 内容。
 
     包含五个章节：技术选型、分层架构、模块职责映射、核心执行流程、ADR 快速索引。
+    模块职责映射按源文件分组展示，方便团队成员快速定位。
 
     Args:
         code_reader_output: code-reader 扫描结果
+        project_root: 项目根目录路径，用于定位源文件
 
     Returns:
         1_ARCHITECTURE.md 的完整 Markdown 内容
@@ -64,9 +70,9 @@ def generate_architecture(code_reader_output: CodeReaderOutput) -> str:
     modules = code_reader_output.modules
     entry_points = code_reader_output.entry_points
     api_routes = code_reader_output.api_routes
-    deps = code_reader_output.dependencies
 
     project_name = info.name or "未命名项目"
+    root = Path(project_root) if project_root else Path.cwd()
 
     # 章节 1：技术选型
     monorepo_desc = "是" if info.monorepo else "否"
@@ -101,23 +107,38 @@ def generate_architecture(code_reader_output: CodeReaderOutput) -> str:
 
 {layer_desc}"""
 
-    # 章节 3：模块职责映射
-    if modules:
-        table_rows = []
-        for mod in modules:
-            layer = mod.layer or "未分类"
-            path = mod.path or "—"
-            apis = "、".join(mod.public_api) if mod.public_api else "—"
-            table_rows.append(f"| {layer} | `{path}` | {mod.name}（公开 API：{apis}） |")
-        module_table = "\n".join(table_rows)
-    else:
-        module_table = "| — | — | 暂无模块信息 |"
+    # 章节 3：模块职责映射（按源文件分组）
+    mapping_parts: list[str] = []
+    mapping_parts.append("## 3. 模块职责映射\n")
 
-    mapping_section = f"""## 3. 模块职责映射
+    for mod in modules:
+        # 获取该模块下的文件列表
+        mod_files = [
+            n for n in code_reader_output.structure
+            if n.type == "file" and n.path.startswith(mod.path + "/")
+        ]
+        api_by_file = _extract_public_api_by_file(
+            root, mod_files
+        ) if mod_files else {}
 
-| 层级 | 核心文件/目录 | 职责说明 |
-|:--|:--|:--|
-{module_table}"""
+        if api_by_file:
+            mapping_parts.append(f"### {mod.name}（`{mod.path}`）\n")
+            mapping_parts.append("| 文件 | 职责 | 公开 API |")
+            mapping_parts.append("|:--|:--|:--|")
+            for filename, apis in api_by_file.items():
+                api_summary = "、".join(apis[:5])
+                if len(apis) > 5:
+                    api_summary += f" 等 {len(apis)} 个"
+                mapping_parts.append(f"| `{filename}.py` | {_infer_file_purpose(filename)} | {api_summary} |")
+            mapping_parts.append("")
+        else:
+            mapping_parts.append(f"### {mod.name}（`{mod.path}`）\n")
+            mapping_parts.append("暂无检测到的公开 API。\n")
+
+    if not modules:
+        mapping_parts.append("暂无模块信息。")
+
+    mapping_section = "\n".join(mapping_parts)
 
     # 章节 4：核心执行流程
     flow_parts = []
@@ -164,14 +185,38 @@ def generate_architecture(code_reader_output: CodeReaderOutput) -> str:
 """
 
 
-def generate_capabilities(code_reader_output: CodeReaderOutput) -> str:
+# 文件名 → 职责描述的简单映射
+_FILE_PURPOSE_MAP = {
+    "server": "MCP Server 注册入口",
+    "models": "共享数据模型",
+    "code_reader": "代码扫描引擎",
+    "doc_code_lens": "文档与代码 drift 检测",
+    "doc_generator": "init 命令文档生成",
+    "git_changelog": "Git 历史分析",
+    "sync": "sync 命令同步逻辑",
+    "status": "status 命令健康度报告",
+    "onboard": "onboard 命令成员引导",
+    "changelog_utils": "Changelog 追加工具",
+    "integrations": "CI/Hook/Cron 集成模板",
+    "template_engine": "自定义文档模板引擎",
+    "collaboration": "协作与锁机制",
+}
+
+
+def _infer_file_purpose(filename: str) -> str:
+    """根据文件名推断职责描述。"""
+    return _FILE_PURPOSE_MAP.get(filename, filename)
+
+
+def generate_capabilities(code_reader_output: CodeReaderOutput, project_root: str = "") -> str:
     """生成 2_CAPABILITIES.md 内容。
 
-    基于 modules 和 api_routes 提取能力项，按模块分组。
+    基于 modules 提取能力项，按源文件分组展示。
     所有能力项标记为 [ ] 待确认状态，禁止出现 [x]。
 
     Args:
         code_reader_output: code-reader 扫描结果
+        project_root: 项目根目录路径，用于定位源文件
 
     Returns:
         2_CAPABILITIES.md 的完整 Markdown 内容
@@ -180,18 +225,33 @@ def generate_capabilities(code_reader_output: CodeReaderOutput) -> str:
     modules = code_reader_output.modules
     api_routes = code_reader_output.api_routes
     project_name = info.name or "未命名项目"
+    root = Path(project_root) if project_root else Path.cwd()
 
     sections: list[str] = []
 
-    # 按模块分组列出能力
     for mod in modules:
-        section_lines = [f"## {mod.name}"]
-        if mod.public_api:
+        # 获取该模块下的文件列表
+        mod_files = [
+            n for n in code_reader_output.structure
+            if n.type == "file" and n.path.startswith(mod.path + "/")
+        ]
+        api_by_file = _extract_public_api_by_file(
+            root, mod_files
+        ) if mod_files else {}
+
+        if api_by_file:
+            for filename, apis in api_by_file.items():
+                purpose = _infer_file_purpose(filename)
+                section_lines = [f"## {purpose}（{filename}.py）"]
+                for api in apis:
+                    section_lines.append(f"- [ ] {api}")
+                sections.append("\n".join(section_lines))
+        elif mod.public_api:
+            # 回退：如果按文件分组失败，用原来的平铺方式
+            section_lines = [f"## {mod.name}"]
             for api in mod.public_api:
                 section_lines.append(f"- [ ] {api}")
-        else:
-            section_lines.append("- [ ] （暂无检测到的能力项）")
-        sections.append("\n".join(section_lines))
+            sections.append("\n".join(section_lines))
 
     # API 路由作为独立能力组
     if api_routes:
@@ -489,23 +549,31 @@ def _build_template_variables(
 
 
 def init_docs(project_root: str, mode: str = "error", lock_ttl_seconds: int = 600) -> dict:
-    """主函数：调用 code-reader 扫描项目并生成所有文档。
+    """主函数：调用 code-reader 扫描项目并生成骨架文档。
+
+    仅生成 4 个骨架文件（0_INDEX.md、3_ROADMAP.md、4_DECISIONS.md、5_CHANGELOG.md），
+    跳过 LLM_GENERATED_FILES 中定义的核心文档（1_ARCHITECTURE.md、2_CAPABILITIES.md），
+    这些文件由 SKILL.md 编排层的 LLM 撰写。
 
     流程：
     1. 调用 code-reader 扫描项目
     2. 创建 .docs/ 目录
-    3. 使用 TemplateEngine 渲染并生成全部 6 个文档文件
-    4. 更新 .gitignore
+    3. 使用 TemplateEngine 渲染并生成 4 个骨架文件（跳过 LLM 核心文档）
+    4. 更新 .gitignore 和 .gitattributes
 
     Args:
         project_root: 项目根目录绝对路径
+        mode: 生成模式，可选 error/overwrite/fill_missing
+        lock_ttl_seconds: 锁超时时间（秒）
 
     Returns:
         包含生成结果摘要的字典：
-        - files: 生成的文件列表
+        - files: 实际生成的文件列表
+        - skipped_for_llm: 跳过的 LLM 核心文档文件名列表
         - scan_meta: 扫描统计信息
         - project_name: 项目名称
         - gitignore_updated: 是否更新了 .gitignore
+        - gitattributes_updated: 是否更新了 .gitattributes
     """
     # 1. 调用 code-reader 扫描项目
     input_params = CodeReaderInput(project_root=project_root)
@@ -540,12 +608,23 @@ def init_docs(project_root: str, mode: str = "error", lock_ttl_seconds: int = 60
 
         files_generated = []
         for template_name in template_names:
-            result = engine.render(template_name, variables)
+            # 跳过由 LLM 撰写的核心文档（1_ARCHITECTURE.md、2_CAPABILITIES.md）。
+            # 无论 mode 为 error/overwrite/fill_missing，这些文件都不由 init_docs 生成，
+            # 而是留给 SKILL.md 编排层的 LLM 撰写。
+            # - mode=overwrite：不会覆盖已存在的 LLM 文件
+            # - mode=fill_missing：即使文件不存在也不生成，留给 LLM
+            if template_name in LLM_GENERATED_FILES:
+                continue
+
             filepath = os.path.join(docs_dir, template_name)
             if mode == "fill_missing" and os.path.exists(filepath):
                 continue
+
+            result = engine.render(template_name, variables)
+            content = result.content
+
             with open(filepath, "w", encoding="utf-8") as f:
-                f.write(result.content)
+                f.write(content)
             files_generated.append(filepath)
 
         gitignore_updated = update_gitignore(project_root)
@@ -569,6 +648,7 @@ def init_docs(project_root: str, mode: str = "error", lock_ttl_seconds: int = 60
 
         return {
             "files": files_generated,
+            "skipped_for_llm": sorted(LLM_GENERATED_FILES),
             "scan_meta": {
                 "total_files": output.scan_meta.total_files,
                 "total_lines": output.scan_meta.total_lines,

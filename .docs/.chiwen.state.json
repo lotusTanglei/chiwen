@@ -1,0 +1,25 @@
+{
+  "tool": "init",
+  "generated_at": "2026-04-20T03:27:00.413895+00:00",
+  "project_root": "/Users/dundundebaba/chiwen",
+  "project_name": "chiwen-knowledge-kit",
+  "lock": {
+    "created_at": 1776655620,
+    "ttl_seconds": 600,
+    "pid": 61339,
+    "user": "dundundebaba",
+    "host": "dundundebabadeMacBook-Pro.local",
+    "expires_at": 1776656220
+  },
+  "mode": "overwrite",
+  "files": [
+    ".docs/0_INDEX.md",
+    ".docs/3_ROADMAP.md",
+    ".docs/4_DECISIONS.md",
+    ".docs/5_CHANGELOG.md"
+  ],
+  "git": {
+    "available": true,
+    "head": "5d5656153c55f60d22b3bad54339ddc00ce65f4d"
+  }
+}

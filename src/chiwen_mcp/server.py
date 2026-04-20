@@ -14,7 +14,13 @@ from mcp.server.fastmcp import FastMCP
 
 
 def _serialize(obj):
-    """将对象转为 JSON 兼容的结构，处理 dataclass 与 Enum。"""
+    """将对象转为 JSON 兼容的结构，处理 dataclass 与 Enum。
+
+    支持的类型包括 dataclass、dict、list、str、int、float、bool 及 None。
+    嵌套结构中的 Enum 会被转为其 .value。
+    注：init_docs() 返回的 skipped_for_llm 字段为 list[str]，
+    属于 list 分支直接透传，无需额外处理。
+    """
     if is_dataclass(obj):
         data = asdict(obj)
     elif isinstance(obj, (dict, list, str, int, float, bool)) or obj is None:

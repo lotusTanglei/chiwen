@@ -638,6 +638,55 @@ def _extract_public_api(root: Path, files: list[FileNode]) -> list[str]:
     return list(dict.fromkeys(apis))  # 去重保序
 
 
+def _extract_public_api_by_file(root: Path, files: list[FileNode]) -> dict[str, list[str]]:
+    """从模块文件中提取公开 API，按源文件分组。
+
+    返回 {文件名(不含路径): [API 名称列表]}，跳过 __init__.py 等无 API 的文件。
+    """
+    result: dict[str, list[str]] = {}
+
+    for node in files:
+        filepath = str(root / node.path)
+        content = _safe_read_text(filepath)
+        if not content:
+            continue
+
+        ext = Path(node.path).suffix.lower()
+        filename = Path(node.path).stem  # 不含扩展名
+
+        # 跳过 __init__ 等辅助文件
+        if filename.startswith("__"):
+            continue
+
+        apis: list[str] = []
+
+        if ext == ".py":
+            for match in re.finditer(
+                r"^(?:def|class)\s+([A-Za-z][A-Za-z0-9_]*)", content, re.MULTILINE
+            ):
+                name = match.group(1)
+                if not name.startswith("_"):
+                    apis.append(name)
+
+        elif ext in (".js", ".ts", ".tsx", ".jsx"):
+            for match in re.finditer(
+                r"export\s+(?:default\s+)?(?:function|class|const|let|var|interface|type|enum)\s+([A-Za-z][A-Za-z0-9_]*)",
+                content,
+            ):
+                apis.append(match.group(1))
+
+        elif ext == ".go":
+            for match in re.finditer(
+                r"^func\s+(?:\([^)]+\)\s+)?([A-Z][A-Za-z0-9_]*)", content, re.MULTILINE
+            ):
+                apis.append(match.group(1))
+
+        if apis:
+            result[filename] = list(dict.fromkeys(apis))
+
+    return result
+
+
 def _extract_dependencies(
     root: Path,
     files: list[FileNode],
@@ -927,7 +976,7 @@ def _extract_project_dependencies(project_root: str) -> Dependencies:
             )
             if dep_match:
                 dep_str = dep_match.group(1)
-                for m in re.finditer(r'"([^">=<\s]+)', dep_str):
+                for m in re.finditer(r'"([a-zA-Z][\w.-]*)', dep_str):
                     deps.direct.append(m.group(1))
                 deps.major = deps.direct[:]
 

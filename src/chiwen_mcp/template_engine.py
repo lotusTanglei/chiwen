@@ -58,19 +58,31 @@ BUILTIN_TEMPLATES: dict[str, str] = {
 
 ## 1. 技术选型
 
-$modules
+$tech_stack
 
-## 2. 入口文件
+## 2. 分层架构
+
+$layers
+
+## 3. 模块职责映射
+
+| 层级 | 核心文件/目录 | 职责说明 |
+|:--|:--|:--|
+$module_table
+
+## 4. 核心执行流程
 
 $entry_points
 
-## 3. API 路由
-
 $api_routes
 
-## 4. 依赖
+## 5. ADR 快速索引
 
-$dependencies
+> 完整记录见 `4_DECISIONS.md`
+
+| ADR编号 | 决策摘要 | 日期 |
+|:--|:--|:--|
+| — | 暂无决策记录 | — |
 """,
     "2_CAPABILITIES.md": """\
 # $project_name 能力矩阵

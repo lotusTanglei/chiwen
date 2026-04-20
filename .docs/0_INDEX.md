@@ -12,10 +12,9 @@
 | 3_ROADMAP.md | 路线图（近/中/远期） | 人工维护，AI 辅助格式化 |
 | 4_DECISIONS.md | 架构决策记录（ADR） | 人工记录，AI 辅助格式化 |
 | 5_CHANGELOG.md | 文档变更日志 | AI 全自动维护 |
-| users/@{username}/ | 个人空间 | 个人维护 |
+| users/@{{username}}/ | 个人空间 | 个人维护 |
 
 ## 外部资源链接
 
-- 测试计划：{链接到团队实际使用的测试平台}
-- 项目管理：{链接到 Jira / Linear / GitHub Projects 等}
-- GitHub 仓库：https://github.com/lotusTanglei/chiwen
+- 测试计划：{{链接到团队实际使用的测试平台}}
+- 项目管理：{{链接到 Jira / Linear / GitHub Projects 等}}
