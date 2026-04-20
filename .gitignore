@@ -6,15 +6,24 @@ dist/
 build/
 .venv/
 
+# OS
+.DS_Store
+
 # IDE
 .vscode/
 .idea/
 
-# Kiro workspace files
+# AI IDE 私有配置（每个人用的 IDE 不同）
 .kiro/
+.trae/
+CLAUDE.md
 
-# Draft design doc
-design.md
+# 测试缓存
+.pytest_cache/
 
-# chiwen docs personal notes
+# chiwen 内部状态文件（含本地路径、锁信息）
+.docs/.chiwen.state.json
+.docs/.chiwen.lock
+
+# chiwen 个人私人笔记（不进 git）
 .docs/users/*/notepad.md
