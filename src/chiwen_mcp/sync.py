@@ -16,6 +16,15 @@ from dataclasses import dataclass, field
 from datetime import date
 
 from .changelog_utils import append_changelog
+from .collaboration import (
+    acquire_docs_lock,
+    git_docs_dirty,
+    git_head,
+    is_git_repo,
+    read_state,
+    release_docs_lock,
+    write_state,
+)
 from .code_reader import CodeReaderInput, scan_project
 from .doc_code_lens import (
     DocClaim,
@@ -149,6 +158,7 @@ def apply_capability_fixes(
     # 规则 3：代码中不再存在的 [x] 能力 → 降级为 [ ] 并附 drift 说明
     lines = content.split("\n")
     new_lines: list[str] = []
+    seen: set[str] = set()
     for line in lines:
         stripped = line.strip()
         checkbox_match = re.match(r"^(-\s+)\[([ xX])\]\s+(.+)$", stripped)
@@ -156,6 +166,10 @@ def apply_capability_fixes(
             prefix = checkbox_match.group(1)
             check = checkbox_match.group(2)
             name = checkbox_match.group(3).strip()
+
+            if name in seen:
+                continue
+            seen.add(name)
 
             if check.lower() == "x" and name in drift_claims:
                 # 降级为 [ ] 并附 drift 说明
@@ -332,7 +346,8 @@ def apply_reverse_fixes(
     # 使用倒序插入避免索引偏移
     insertions: list[tuple[int, list[str]]] = []
 
-    for module_name, cap_names in module_additions.items():
+    for module_name in sorted(module_additions.keys()):
+        cap_names = sorted(set(module_additions[module_name]))
         pos = find_insert_position(module_name)
         if pos == -1:
             # 分组不存在，归入未分类
@@ -346,6 +361,7 @@ def apply_reverse_fixes(
 
     # 处理未分类项
     if uncategorized:
+        uncategorized = sorted(set(uncategorized))
         pos = find_insert_position("未分类")
         new_lines = []
         for cap in uncategorized:
@@ -371,10 +387,35 @@ def apply_reverse_fixes(
     if updated_content and not updated_content.endswith("\n"):
         updated_content += "\n"
 
+    seen: set[str] = set()
+    deduped_lines: list[str] = []
+    for line in updated_content.splitlines():
+        stripped = line.strip()
+        m = re.match(r"^-\s+\[[ xX]\]\s+(.+)$", stripped)
+        if not m:
+            deduped_lines.append(line)
+            continue
+        name = m.group(1).strip()
+        if name in seen:
+            continue
+        seen.add(name)
+        deduped_lines.append(line)
+    updated_content = "\n".join(deduped_lines)
+    if updated_content and not updated_content.endswith("\n"):
+        updated_content += "\n"
+
+    with open(capabilities_path, "w", encoding="utf-8") as f:
+        f.write(updated_content)
+
     return updated_content, changes
 
 
-def sync_docs(project_root: str) -> SyncResult:
+def sync_docs(
+    project_root: str,
+    allow_dirty: bool = False,
+    allow_risky: bool = False,
+    lock_ttl_seconds: int = 600,
+) -> SyncResult:
     """sync 命令主函数，执行完整 sync 流程。
 
     流程：
@@ -407,91 +448,138 @@ def sync_docs(project_root: str) -> SyncResult:
     if not os.path.isdir(docs_dir):
         raise ValueError(f".docs/ 目录不存在，请先执行 init 命令：{docs_dir}")
 
-    # 步骤 1：调用 doc-code-lens（full 模式，同时获取 forward + reverse drift）
-    lens_input = DocCodeLensInput(
-        project_root=project_root,
-        mode="full",
-    )
-    lens_output = run_doc_code_lens(lens_input)
+    if is_git_repo(project_root) and not allow_dirty and git_docs_dirty(project_root):
+        raise ValueError("检测到 .docs/ 存在未提交变更，请先提交/暂存，或传 allow_dirty=true 继续")
 
-    result.drift_count = lens_output.summary.drifted
+    state = read_state(docs_dir)
+    if state is not None:
+        last_head = ""
+        try:
+            last_head = str(state.get("git", {}).get("head", ""))
+        except Exception:
+            last_head = ""
 
-    # 如果无任何 drift 项，直接返回
-    if result.drift_count == 0:
-        result.details.append("文档与代码一致，无需更新")
+        if (
+            last_head
+            and is_git_repo(project_root)
+            and git_head(project_root) != last_head
+            and not allow_risky
+        ):
+            raise ValueError(
+                "检测到当前 Git HEAD 与上次 sync/init 记录不一致，"
+                "可能存在跨分支覆盖风险，请传 allow_risky=true 继续"
+            )
+
+    lock = acquire_docs_lock(docs_dir, ttl_seconds=lock_ttl_seconds)
+    modified_files: list[str] = []
+    try:
+        lens_input = DocCodeLensInput(
+            project_root=project_root,
+            mode="full",
+        )
+        lens_output = run_doc_code_lens(lens_input)
+
+        result.drift_count = lens_output.summary.drifted
+
+        if result.drift_count == 0:
+            result.details.append("文档与代码一致，无需更新")
+            return result
+
+        fixes: list[FixContent] = []
+        for drift in lens_output.forward_drift:
+            fix = generate_fix_content(drift)
+            fixes.append(fix)
+
+        cr_input = CodeReaderInput(project_root=project_root)
+        cr_output = scan_project(cr_input)
+
+        code_capabilities: set[str] = set()
+        for module in cr_output.modules:
+            for api in module.public_api:
+                code_capabilities.add(api)
+
+        capabilities_path = os.path.join(docs_dir, "2_CAPABILITIES.md")
+        if os.path.isfile(capabilities_path):
+            _, cap_changes = apply_capability_fixes(
+                capabilities_path,
+                lens_output.forward_drift,
+                code_capabilities,
+            )
+            result.fix_count += len(cap_changes)
+            result.details.extend(cap_changes)
+            if cap_changes:
+                modified_files.append("2_CAPABILITIES.md")
+
+        if lens_output.reverse_drift:
+            _, reverse_changes = apply_reverse_fixes(
+                capabilities_path,
+                lens_output.reverse_drift,
+                cr_output.modules,
+            )
+            result.reverse_fix_count = len(reverse_changes)
+            result.details.extend(reverse_changes)
+            if reverse_changes and "2_CAPABILITIES.md" not in modified_files:
+                modified_files.append("2_CAPABILITIES.md")
+
+        changelog_path = os.path.join(docs_dir, "5_CHANGELOG.md")
+        today = date.today().isoformat()
+
+        changelog_entries: list[ChangelogEntry] = []
+        if result.fix_count > 0:
+            changelog_entries.append(
+                ChangelogEntry(
+                    date=today,
+                    change_type="能力同步",
+                    target_doc="2_CAPABILITIES.md",
+                    summary=f"sync 修复 {result.fix_count} 项能力矩阵 drift",
+                )
+            )
+
+        if result.drift_count > 0:
+            changelog_entries.append(
+                ChangelogEntry(
+                    date=today,
+                    change_type="drift 检测",
+                    target_doc="多个文档",
+                    summary=f"检测到 {result.drift_count} 项 drift，已处理 {result.fix_count} 项",
+                )
+            )
+
+        if result.reverse_fix_count > 0:
+            changelog_entries.append(
+                ChangelogEntry(
+                    date=today,
+                    change_type="reverse drift 修复",
+                    target_doc="2_CAPABILITIES.md",
+                    summary=f"自动追加 {result.reverse_fix_count} 项未记录的代码能力到能力矩阵",
+                )
+            )
+
+        if changelog_entries:
+            append_changelog(changelog_path, changelog_entries)
+            result.changelog_updated = True
+            result.details.append(
+                f"已追加 {len(changelog_entries)} 条变更记录到 5_CHANGELOG.md"
+            )
+            modified_files.append("5_CHANGELOG.md")
+
+        write_state(
+            docs_dir,
+            {
+                "tool": "sync",
+                "generated_at": date.today().isoformat(),
+                "project_root": project_root,
+                "lock": lock.to_dict(),
+                "allow_dirty": allow_dirty,
+                "allow_risky": allow_risky,
+                "files": modified_files,
+                "git": {
+                    "available": is_git_repo(project_root),
+                    "head": git_head(project_root) if is_git_repo(project_root) else "",
+                },
+            },
+        )
+
         return result
-
-    # 步骤 2：为每个 forward drift 项生成修复内容
-    fixes: list[FixContent] = []
-    for drift in lens_output.forward_drift:
-        fix = generate_fix_content(drift)
-        fixes.append(fix)
-
-    # 步骤 3：收集代码中实际存在的能力
-    # 通过 code-reader 扫描获取代码能力
-    cr_input = CodeReaderInput(project_root=project_root)
-    cr_output = scan_project(cr_input)
-
-    code_capabilities: set[str] = set()
-    for module in cr_output.modules:
-        for api in module.public_api:
-            code_capabilities.add(api)
-
-    # 步骤 4：执行能力矩阵 forward drift 修复
-    capabilities_path = os.path.join(docs_dir, "2_CAPABILITIES.md")
-    if os.path.isfile(capabilities_path):
-        _, cap_changes = apply_capability_fixes(
-            capabilities_path,
-            lens_output.forward_drift,
-            code_capabilities,
-        )
-        result.fix_count += len(cap_changes)
-        result.details.extend(cap_changes)
-
-    # 步骤 5：执行 reverse drift 修复
-    if lens_output.reverse_drift:
-        _, reverse_changes = apply_reverse_fixes(
-            capabilities_path,
-            lens_output.reverse_drift,
-            cr_output.modules,
-        )
-        result.reverse_fix_count = len(reverse_changes)
-        result.details.extend(reverse_changes)
-
-    # 步骤 6：追加 5_CHANGELOG.md
-    changelog_path = os.path.join(docs_dir, "5_CHANGELOG.md")
-    today = date.today().isoformat()
-
-    changelog_entries: list[ChangelogEntry] = []
-    if result.fix_count > 0:
-        changelog_entries.append(ChangelogEntry(
-            date=today,
-            change_type="能力同步",
-            target_doc="2_CAPABILITIES.md",
-            summary=f"sync 修复 {result.fix_count} 项能力矩阵 drift",
-        ))
-
-    if result.drift_count > 0:
-        changelog_entries.append(ChangelogEntry(
-            date=today,
-            change_type="drift 检测",
-            target_doc="多个文档",
-            summary=f"检测到 {result.drift_count} 项 drift，已处理 {result.fix_count} 项",
-        ))
-
-    if result.reverse_fix_count > 0:
-        changelog_entries.append(ChangelogEntry(
-            date=today,
-            change_type="reverse drift 修复",
-            target_doc="2_CAPABILITIES.md",
-            summary=f"自动追加 {result.reverse_fix_count} 项未记录的代码能力到能力矩阵",
-        ))
-
-    if changelog_entries:
-        append_changelog(changelog_path, changelog_entries)
-        result.changelog_updated = True
-        result.details.append(
-            f"已追加 {len(changelog_entries)} 条变更记录到 5_CHANGELOG.md"
-        )
-
-    return result
+    finally:
+        release_docs_lock(docs_dir)

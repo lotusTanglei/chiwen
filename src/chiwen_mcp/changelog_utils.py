@@ -42,6 +42,8 @@ def parse_changelog(content: str) -> ChangelogDoc:
     doc = ChangelogDoc()
     lines = content.split("\n")
 
+    group_map: dict[str, ChangelogGroup] = {}
+    group_order: list[str] = []
     current_group: ChangelogGroup | None = None
     in_header = True  # 在遇到第一个日期分组前，都算 header
 
@@ -50,10 +52,11 @@ def parse_changelog(content: str) -> ChangelogDoc:
 
         if date_match:
             in_header = False
-            # 保存之前的分组
-            if current_group is not None:
-                doc.groups.append(current_group)
-            current_group = ChangelogGroup(date=date_match.group(1))
+            date_str = date_match.group(1)
+            if date_str not in group_map:
+                group_map[date_str] = ChangelogGroup(date=date_str)
+                group_order.append(date_str)
+            current_group = group_map[date_str]
             continue
 
         if in_header:
@@ -72,9 +75,7 @@ def parse_changelog(content: str) -> ChangelogDoc:
                 )
                 current_group.changes.append(entry)
 
-    # 别忘了最后一个分组
-    if current_group is not None:
-        doc.groups.append(current_group)
+    doc.groups = [group_map[d] for d in group_order]
 
     return doc
 
@@ -138,10 +139,26 @@ def append_changelog(changelog_path: str, entries: list[ChangelogEntry]) -> str:
     for date, date_entries in sorted(new_groups.items(), reverse=True):
         if date in existing_dates:
             # 追加到已有分组
-            existing_dates[date].changes.extend(date_entries)
+            existing_keys = {
+                (c.change_type, c.target_doc, c.summary)
+                for c in existing_dates[date].changes
+            }
+            to_add = [
+                e
+                for e in date_entries
+                if (e.change_type, e.target_doc, e.summary) not in existing_keys
+            ]
+            to_add.sort(key=lambda e: (e.change_type, e.target_doc, e.summary))
+            existing_dates[date].changes.extend(to_add)
         else:
             # 创建新分组
-            group = ChangelogGroup(date=date, changes=date_entries)
+            unique: dict[tuple[str, str, str], ChangelogEntry] = {}
+            for e in date_entries:
+                unique[(e.change_type, e.target_doc, e.summary)] = e
+            sorted_entries = sorted(
+                unique.values(), key=lambda e: (e.change_type, e.target_doc, e.summary)
+            )
+            group = ChangelogGroup(date=date, changes=sorted_entries)
             new_date_groups.append(group)
 
     # 新日期分组插入到最前面（最新日期在前）

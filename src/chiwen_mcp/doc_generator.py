@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 
 from .code_reader import CodeReaderInput, scan_project
 from .models import ApiRoute, CodeReaderOutput, Module
+from .collaboration import acquire_docs_lock, git_head, is_git_repo, release_docs_lock, write_state
 from .template_engine import TemplateEngine
 
 
@@ -358,6 +359,34 @@ def update_gitignore(project_root: str) -> bool:
     return True
 
 
+def update_gitattributes(project_root: str) -> bool:
+    gitattributes_path = os.path.join(project_root, ".gitattributes")
+    entries = [
+        ".docs/2_CAPABILITIES.md merge=union",
+        ".docs/5_CHANGELOG.md merge=union",
+    ]
+
+    existing_content = ""
+    if os.path.isfile(gitattributes_path):
+        with open(gitattributes_path, encoding="utf-8") as f:
+            existing_content = f.read()
+
+    lines = existing_content.splitlines()
+    existing = {line.strip() for line in lines if line.strip()}
+
+    to_add = [e for e in entries if e not in existing]
+    if not to_add:
+        return False
+
+    with open(gitattributes_path, "a", encoding="utf-8") as f:
+        if existing_content and not existing_content.endswith("\n"):
+            f.write("\n")
+        for e in to_add:
+            f.write(e + "\n")
+
+    return True
+
+
 def _build_template_variables(
     project_name: str,
     output: CodeReaderOutput,
@@ -459,7 +488,7 @@ def _build_template_variables(
     }
 
 
-def init_docs(project_root: str) -> dict:
+def init_docs(project_root: str, mode: str = "error", lock_ttl_seconds: int = 600) -> dict:
     """主函数：调用 code-reader 扫描项目并生成所有文档。
 
     流程：
@@ -484,42 +513,71 @@ def init_docs(project_root: str) -> dict:
 
     project_name = output.project_info.name or os.path.basename(project_root)
 
-    # 2. 创建 .docs/ 目录
     docs_dir = os.path.join(project_root, ".docs")
     os.makedirs(docs_dir, exist_ok=True)
 
-    # 3. 使用 TemplateEngine 渲染全部文档
-    engine = TemplateEngine(project_root)
-    variables = _build_template_variables(project_name, output)
+    if mode not in ("error", "overwrite", "fill_missing"):
+        raise ValueError(f"mode 必须为 error/overwrite/fill_missing 之一，当前值：{mode}")
 
-    template_names = [
-        "0_INDEX.md",
-        "1_ARCHITECTURE.md",
-        "2_CAPABILITIES.md",
-        "3_ROADMAP.md",
-        "4_DECISIONS.md",
-        "5_CHANGELOG.md",
-    ]
+    if mode == "error":
+        existing = [f for f in os.listdir(docs_dir) if f.endswith(".md")]
+        if existing:
+            raise ValueError(f".docs/ 已存在，如需覆盖生成请使用 mode=overwrite：{docs_dir}")
 
-    files_generated = []
-    for template_name in template_names:
-        result = engine.render(template_name, variables)
-        filepath = os.path.join(docs_dir, template_name)
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write(result.content)
-        files_generated.append(filepath)
+    lock = acquire_docs_lock(docs_dir, ttl_seconds=lock_ttl_seconds)
+    try:
+        engine = TemplateEngine(project_root)
+        variables = _build_template_variables(project_name, output)
 
-    # 4. 更新 .gitignore
-    gitignore_updated = update_gitignore(project_root)
+        template_names = [
+            "0_INDEX.md",
+            "1_ARCHITECTURE.md",
+            "2_CAPABILITIES.md",
+            "3_ROADMAP.md",
+            "4_DECISIONS.md",
+            "5_CHANGELOG.md",
+        ]
 
-    return {
-        "files": files_generated,
-        "scan_meta": {
-            "total_files": output.scan_meta.total_files,
-            "total_lines": output.scan_meta.total_lines,
-            "scan_duration_ms": output.scan_meta.scan_duration_ms,
-            "modules_count": len(output.modules),
-        },
-        "project_name": project_name,
-        "gitignore_updated": gitignore_updated,
-    }
+        files_generated = []
+        for template_name in template_names:
+            result = engine.render(template_name, variables)
+            filepath = os.path.join(docs_dir, template_name)
+            if mode == "fill_missing" and os.path.exists(filepath):
+                continue
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(result.content)
+            files_generated.append(filepath)
+
+        gitignore_updated = update_gitignore(project_root)
+        gitattributes_updated = update_gitattributes(project_root)
+
+        git_available = is_git_repo(project_root)
+        state = {
+            "tool": "init",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "project_root": project_root,
+            "project_name": project_name,
+            "lock": lock.to_dict(),
+            "mode": mode,
+            "files": [os.path.relpath(p, project_root) for p in files_generated],
+            "git": {
+                "available": git_available,
+                "head": git_head(project_root) if git_available else "",
+            },
+        }
+        write_state(docs_dir, state)
+
+        return {
+            "files": files_generated,
+            "scan_meta": {
+                "total_files": output.scan_meta.total_files,
+                "total_lines": output.scan_meta.total_lines,
+                "scan_duration_ms": output.scan_meta.scan_duration_ms,
+                "modules_count": len(output.modules),
+            },
+            "project_name": project_name,
+            "gitignore_updated": gitignore_updated,
+            "gitattributes_updated": gitattributes_updated,
+        }
+    finally:
+        release_docs_lock(docs_dir)

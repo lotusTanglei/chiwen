@@ -7,15 +7,20 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict
+from dataclasses import asdict, is_dataclass
 from enum import Enum
 
 from mcp.server.fastmcp import FastMCP
 
 
 def _serialize(obj):
-    """将 dataclass 转为 JSON 兼容的 dict，处理 Enum 类型。"""
-    data = asdict(obj)
+    """将对象转为 JSON 兼容的结构，处理 dataclass 与 Enum。"""
+    if is_dataclass(obj):
+        data = asdict(obj)
+    elif isinstance(obj, (dict, list, str, int, float, bool)) or obj is None:
+        data = obj
+    else:
+        data = {"value": str(obj)}
 
     def _convert(d):
         if isinstance(d, dict):
@@ -29,8 +34,12 @@ def _serialize(obj):
     return _convert(data)
 
 from .code_reader import CodeReaderInput, scan_project
+from .doc_generator import init_docs
 from .doc_code_lens import run_doc_code_lens
 from .git_changelog import run_git_changelog
+from .onboard import onboard
+from .status import export_markdown, get_status
+from .sync import sync_docs
 from .models import DocCodeLensInput, GitChangelogInput
 
 mcp = FastMCP(
@@ -102,6 +111,41 @@ def code_reader(
 
 
 @mcp.tool(
+    name="init-docs",
+    description="初始化生成 .docs/ 文档体系（确定性生成，避免不同 LLM 输出差异）。",
+)
+def init_docs_tool(
+    project_root: str,
+    overwrite: bool = False,
+    mode: str = "error",
+    lock_ttl_seconds: int = 600,
+) -> str:
+    if not project_root or not project_root.strip():
+        return json.dumps(
+            {"error": "参数错误：project_root 为必填项，不能为空"},
+            ensure_ascii=False,
+        )
+
+    if not os.path.isdir(project_root):
+        return json.dumps(
+            {"error": f"路径不存在或不是目录：{project_root}"},
+            ensure_ascii=False,
+        )
+
+    if overwrite:
+        mode = "overwrite"
+
+    try:
+        result = init_docs(project_root, mode=mode, lock_ttl_seconds=lock_ttl_seconds)
+        return json.dumps(_serialize(result), ensure_ascii=False)
+    except Exception as e:
+        return json.dumps(
+            {"error": f"初始化失败：{e}"},
+            ensure_ascii=False,
+        )
+
+
+@mcp.tool(
     name="doc-code-lens",
     description=(
         "文档与代码的双向透视镜，检测文档与代码之间的不一致（drift）。"
@@ -165,6 +209,119 @@ def doc_code_lens(
     except Exception as e:
         return json.dumps(
             {"error": f"扫描失败：{e}"},
+            ensure_ascii=False,
+        )
+
+
+@mcp.tool(
+    name="sync-docs",
+    description="同步 .docs/ 与代码（确定性修复能力矩阵与 drift，并更新 5_CHANGELOG.md）。",
+)
+def sync_docs_tool(
+    project_root: str,
+    allow_dirty: bool = False,
+    allow_risky: bool = False,
+    lock_ttl_seconds: int = 600,
+) -> str:
+    if not project_root or not project_root.strip():
+        return json.dumps(
+            {"error": "参数错误：project_root 为必填项，不能为空"},
+            ensure_ascii=False,
+        )
+
+    if not os.path.isdir(project_root):
+        return json.dumps(
+            {"error": f"路径不存在或不是目录：{project_root}"},
+            ensure_ascii=False,
+        )
+
+    try:
+        result = sync_docs(
+            project_root,
+            allow_dirty=allow_dirty,
+            allow_risky=allow_risky,
+            lock_ttl_seconds=lock_ttl_seconds,
+        )
+        return json.dumps(_serialize(result), ensure_ascii=False)
+    except Exception as e:
+        return json.dumps(
+            {"error": f"sync 失败：{e}"},
+            ensure_ascii=False,
+        )
+
+
+@mcp.tool(
+    name="status-report",
+    description="生成文档健康度报告（可选写入 .docs/STATUS_REPORT.md）。",
+)
+def status_report(
+    project_root: str,
+    write_markdown: bool = False,
+    output_path: str | None = None,
+) -> str:
+    if not project_root or not project_root.strip():
+        return json.dumps(
+            {"error": "参数错误：project_root 为必填项，不能为空"},
+            ensure_ascii=False,
+        )
+
+    if not os.path.isdir(project_root):
+        return json.dumps(
+            {"error": f"路径不存在或不是目录：{project_root}"},
+            ensure_ascii=False,
+        )
+
+    try:
+        report = get_status(project_root)
+        md_text = ""
+        md_path = ""
+        if write_markdown:
+            md_text = export_markdown(report, output_path=output_path, project_root=project_root)
+            md_path = output_path or os.path.join(project_root, ".docs", "STATUS_REPORT.md")
+        return json.dumps(
+            _serialize(
+                {
+                    "report": report,
+                    "markdown": md_text,
+                    "markdown_path": md_path,
+                }
+            ),
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        return json.dumps(
+            {"error": f"status 失败：{e}"},
+            ensure_ascii=False,
+        )
+
+
+@mcp.tool(
+    name="onboard-user",
+    description="创建 .docs/users/@{username}/ 个人空间（notepad.md + cache.md）并返回阅读清单。",
+)
+def onboard_user(
+    project_root: str,
+    username: str | None = None,
+    overwrite: bool = False,
+) -> str:
+    if not project_root or not project_root.strip():
+        return json.dumps(
+            {"error": "参数错误：project_root 为必填项，不能为空"},
+            ensure_ascii=False,
+        )
+
+    if not os.path.isdir(project_root):
+        return json.dumps(
+            {"error": f"路径不存在或不是目录：{project_root}"},
+            ensure_ascii=False,
+        )
+
+    try:
+        result = onboard(project_root, username=username, overwrite=overwrite)
+        return json.dumps(_serialize(result), ensure_ascii=False)
+    except Exception as e:
+        return json.dumps(
+            {"error": f"onboard 失败：{e}"},
             ensure_ascii=False,
         )
 

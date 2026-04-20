@@ -67,9 +67,11 @@ inclusion: manual
    - 如果已存在，提示用户选择：覆盖 / 合并 / 取消
    - 用户选择取消则终止流程
 
-2. **调用 `code-reader` MCP**
+2. **优先调用 `init-docs` MCP（确定性生成）**
    - 参数：`project_root` = 当前项目根目录绝对路径
-   - 使用默认参数：`depth=3`, `include_patterns=["*"]`, `exclude_patterns=["node_modules", ".git"]`
+   - 若用户选择覆盖：传 `mode=overwrite`（兼容参数：`overwrite=true`）
+   - 若用户选择合并（仅补齐缺失文件）：传 `mode=fill_missing`
+   - 若 MCP 不支持 `init-docs`（旧版本），再退化为调用 `code-reader` 并由你生成文档内容
 
 3. **创建 `.docs/` 目录**
 
@@ -103,7 +105,12 @@ inclusion: manual
 流程：
 
 1. 检查 `.docs/` 是否存在（不存在则提示先 init）
-2. 调用 `doc-code-lens` MCP（mode=full）
+2. **优先调用 `sync-docs` MCP（确定性修复）**
+   - 参数：`project_root` = 当前项目根目录绝对路径
+   - 多人协作建议：先 `git pull --rebase` 并确保 `.docs/` 干净再运行
+   - 若 `.docs/` 有未提交变更：默认会拒绝执行；需要显式传 `allow_dirty=true`
+   - 若检测到跨分支覆盖风险（Git HEAD 与上次记录不一致）：默认会拒绝执行；需要显式传 `allow_risky=true`
+   - 若 MCP 不支持 `sync-docs`（旧版本），再退化为调用 `doc-code-lens` 并由你按规则编辑文档
 3. 无 drift → 报告一致，结束
 4. 有 drift → 按优先级展示 drift 项和修复建议
 5. 等待用户确认（全部修复 / 逐项确认 / 取消）
@@ -122,12 +129,12 @@ inclusion: manual
 触发条件：用户要求加入项目引导，或用户说 "onboard"。
 
 流程：
-
-1. 获取用户名（git config → USER → USERNAME → 手动输入）
-2. 检查个人目录是否已存在（已存在则提示覆盖/跳过）
-3. 创建 `.docs/users/@{username}/`：
-   - `notepad.md`（私人笔记模板）
-   - `cache.md`（工作风格 / 当前关注点 / 已知盲区）
+1. **优先调用 `onboard-user` MCP（确定性生成）**
+   - 参数：`project_root` = 当前项目根目录绝对路径
+   - 可选：`username`（不传则自动获取）
+   - 若需要覆盖：传 `overwrite=true`
+2. 若 MCP 不支持 `onboard-user`（旧版本），再退化为手动创建 `.docs/users/@{username}/` 并写入模板
+3. 输出阅读清单：0_INDEX → 1_ARCHITECTURE → 2_CAPABILITIES
 4. 输出阅读清单：0_INDEX → 1_ARCHITECTURE → 2_CAPABILITIES
 
 ---
@@ -137,9 +144,7 @@ inclusion: manual
 触发条件：用户要求查看文档状态，或用户说 "status"。
 
 流程：
-
-1. 检查 `.docs/` 是否存在（不存在则提示先 init）
-2. 调用 `doc-code-lens` MCP（mode=full）
-3. 调用 `git-changelog` MCP（since=30 days ago，失败则跳过标注不可用）
-4. 生成报告：同步率 + 活跃贡献者 + 过期文档 + 待处理 drift
-5. 展示报告，同步率低则建议执行 sync
+2. **优先调用 `status-report` MCP（确定性报告）**
+   - 参数：`project_root` = 当前项目根目录绝对路径
+   - 可选：`write_markdown=true` 将报告写入 `.docs/STATUS_REPORT.md`
+3. 若 MCP 不支持 `status-report`（旧版本），再退化为调用 `doc-code-lens` + `git-changelog` 并由你汇总生成报告

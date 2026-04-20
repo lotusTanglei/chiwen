@@ -521,49 +521,80 @@ def _infer_modules(
     """通过文件命名约定和导入关系推断模块层级和依赖。"""
     root = Path(project_root)
     modules: list[Module] = []
-    # 收集顶层目录作为模块候选
-    top_dirs: dict[str, list[FileNode]] = {}
+    ignored_module_dirs = {
+        ".git",
+        ".docs",
+        ".venv",
+        "__pycache__",
+        "node_modules",
+        "dist",
+        "build",
+        "coverage",
+        "tests",
+        "test",
+    }
 
+    source_root: str | None = None
+    module_groups: dict[str, list[FileNode]] = {}
+
+    src_children: dict[str, list[FileNode]] = {}
     for node in structure:
         parts = Path(node.path).parts
-        if len(parts) >= 1:
-            top_dir = parts[0]
-            if top_dir not in top_dirs:
-                top_dirs[top_dir] = []
-            top_dirs[top_dir].append(node)
+        if len(parts) >= 2 and parts[0] == "src" and parts[1] not in ignored_module_dirs:
+            src_children.setdefault(parts[1], []).append(node)
 
-    for dir_name, nodes in top_dirs.items():
-        dir_path = root / dir_name
+    if src_children:
+        source_root = "src"
+        module_groups = src_children
+    else:
+        top_dirs: dict[str, list[FileNode]] = {}
+        for node in structure:
+            parts = Path(node.path).parts
+            if not parts:
+                continue
+            top_dir = parts[0]
+            if top_dir in ignored_module_dirs:
+                continue
+            top_dirs.setdefault(top_dir, []).append(node)
+        module_groups = top_dirs
+
+    known_modules = set(module_groups.keys())
+
+    for module_name, nodes in module_groups.items():
+        dir_rel_path = (
+            str(Path(source_root) / module_name) if source_root else module_name
+        )
+        dir_path = root / dir_rel_path
         if not dir_path.is_dir():
             continue
 
-        # focus 过滤：如果指定了 focus，仅深度分析 focus 中的模块
         if focus and not any(
-            fnmatch.fnmatch(dir_name, f) or dir_name == f for f in focus
+            fnmatch.fnmatch(module_name, f) or module_name == f for f in focus
         ):
             continue
 
-        # 收集模块内的文件
         module_files = [n for n in nodes if n.type == "file"]
         if not module_files:
             continue
 
-        # 推断层级
-        layer = _infer_layer(dir_name, dir_name)
-
-        # 提取公开 API（导出的函数/类名）
+        layer = _infer_layer(module_name, dir_rel_path)
         public_api = _extract_public_api(root, module_files)
+        dependencies = _extract_dependencies(
+            root,
+            module_files,
+            known_modules=known_modules,
+            source_root=source_root,
+        )
 
-        # 提取依赖（导入关系）
-        dependencies = _extract_dependencies(root, module_files, top_dirs.keys())
-
-        modules.append(Module(
-            name=dir_name,
-            path=dir_name,
-            layer=layer,
-            dependencies=dependencies,
-            public_api=public_api,
-        ))
+        modules.append(
+            Module(
+                name=module_name,
+                path=dir_rel_path,
+                layer=layer,
+                dependencies=dependencies,
+                public_api=public_api,
+            )
+        )
 
     return modules
 
@@ -608,7 +639,10 @@ def _extract_public_api(root: Path, files: list[FileNode]) -> list[str]:
 
 
 def _extract_dependencies(
-    root: Path, files: list[FileNode], known_modules: object
+    root: Path,
+    files: list[FileNode],
+    known_modules: set[str],
+    source_root: str | None = None,
 ) -> list[str]:
     """从导入语句中提取模块间依赖。"""
     deps: set[str] = set()
@@ -620,7 +654,11 @@ def _extract_dependencies(
             continue
 
         ext = Path(node.path).suffix.lower()
-        current_module = Path(node.path).parts[0] if Path(node.path).parts else ""
+        parts = Path(node.path).parts
+        if source_root and len(parts) >= 2 and parts[0] == source_root:
+            current_module = parts[1]
+        else:
+            current_module = parts[0] if parts else ""
 
         if ext == ".py":
             # Python: from X import ... / import X
@@ -643,6 +681,8 @@ def _extract_dependencies(
                     resolved = (Path(node.path).parent / path_str).parts
                     if resolved:
                         top = resolved[0]
+                        if source_root and top == source_root and len(resolved) >= 2:
+                            top = resolved[1]
                         if top != current_module and top in known_modules:
                             deps.add(top)
 

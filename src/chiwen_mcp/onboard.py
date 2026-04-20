@@ -105,7 +105,7 @@ def get_reading_list() -> list[dict[str, str]]:
     ]
 
 
-def onboard(project_root: str, username: str | None = None) -> dict:
+def onboard(project_root: str, username: str | None = None, overwrite: bool = False) -> dict:
     """主函数：创建个人空间并输出阅读清单。
 
     流程：
@@ -145,7 +145,8 @@ def onboard(project_root: str, username: str | None = None) -> dict:
     # 2. 检查个人目录是否已存在
     user_dir = os.path.join(project_root, ".docs", "users", f"@{username}")
 
-    if os.path.isdir(user_dir):
+    existed_before = os.path.isdir(user_dir)
+    if existed_before and not overwrite:
         return {
             "success": False,
             "message": f"个人目录已存在：{user_dir}",
@@ -179,4 +180,5 @@ def onboard(project_root: str, username: str | None = None) -> dict:
         "user_dir": user_dir,
         "files_created": files_created,
         "reading_list": get_reading_list(),
+        "already_exists": existed_before,
     }
