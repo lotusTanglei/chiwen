@@ -584,18 +584,42 @@ def init_docs(project_root: str, mode: str = "error", lock_ttl_seconds: int = 60
     docs_dir = os.path.join(project_root, ".docs")
     os.makedirs(docs_dir, exist_ok=True)
 
-    if mode not in ("error", "overwrite", "fill_missing"):
-        raise ValueError(f"mode 必须为 error/overwrite/fill_missing 之一，当前值：{mode}")
+    if mode not in ("error", "overwrite", "fill_missing", "upgrade"):
+        raise ValueError(f"mode 必须为 error/overwrite/fill_missing/upgrade 之一，当前值：{mode}")
 
     if mode == "error":
         existing = [f for f in os.listdir(docs_dir) if f.endswith(".md")]
         if existing:
             raise ValueError(f".docs/ 已存在，如需覆盖生成请使用 mode=overwrite：{docs_dir}")
 
+    # upgrade 模式：保留已有文档，仅创建 modules/ 目录和新增文件
+    if mode == "upgrade":
+        mode = "fill_missing"
+
     lock = acquire_docs_lock(docs_dir, ttl_seconds=lock_ttl_seconds)
     try:
         engine = TemplateEngine(project_root)
         variables = _build_template_variables(project_name, output)
+
+        # 创建 modules/ 子目录
+        modules_dir = os.path.join(docs_dir, "modules")
+        os.makedirs(modules_dir, exist_ok=True)
+
+        # 计算需要 LLM 撰写的模块文档文件名
+        module_doc_files: list[str] = []
+        for mod in output.modules:
+            mod_files = [
+                n for n in output.structure
+                if n.type == "file" and n.path.startswith(mod.path + "/")
+            ]
+            api_by_file = _extract_public_api_by_file(
+                Path(project_root), mod_files
+            ) if mod_files else {}
+            for filename in api_by_file:
+                module_doc_files.append(f"modules/{filename}.md")
+
+        # skipped_for_llm = 全局核心文档 + 模块文档
+        skipped_for_llm = sorted(LLM_GENERATED_FILES) + sorted(set(module_doc_files))
 
         template_names = [
             "0_INDEX.md",
@@ -648,7 +672,8 @@ def init_docs(project_root: str, mode: str = "error", lock_ttl_seconds: int = 60
 
         return {
             "files": files_generated,
-            "skipped_for_llm": sorted(LLM_GENERATED_FILES),
+            "skipped_for_llm": skipped_for_llm,
+            "modules_dir": modules_dir,
             "scan_meta": {
                 "total_files": output.scan_meta.total_files,
                 "total_lines": output.scan_meta.total_lines,

@@ -212,16 +212,46 @@ def apply_capability_fixes(
     return content, changes
 
 
+def _append_to_module_api_table(mod_doc_path: str, content: str, api_name: str) -> None:
+    """将新 API 追加到模块文档的公开 API 表格末尾。"""
+    lines = content.splitlines()
+    insert_pos = -1
+    in_api_section = False
+
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if re.match(r"^##\s+公开\s*API", stripped):
+            in_api_section = True
+            continue
+        if in_api_section and re.match(r"^##\s+", stripped) and "公开" not in stripped:
+            insert_pos = i
+            break
+        if in_api_section and stripped.startswith("|") and "---" not in stripped and "函数" not in stripped:
+            insert_pos = i + 1
+
+    if insert_pos == -1:
+        insert_pos = len(lines)
+
+    new_row = f"| `{api_name}` | （待补充说明） |"
+    lines.insert(insert_pos, new_row)
+
+    with open(mod_doc_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+        if not lines[-1].endswith("\n"):
+            f.write("\n")
+
+
 def apply_reverse_fixes(
     capabilities_path: str,
     reverse_drifts: list[ReverseDrift],
     code_modules: list[Module],
+    modules_dir: str = "",
 ) -> tuple[str, list[str]]:
-    """将 reverse drift 项追加到能力矩阵。
+    """将 reverse drift 项追加到能力矩阵和模块文档。
 
     规则：
-    1. 根据 ReverseDrift.file 匹配模块分组
-    2. 在对应模块分组末尾追加 ``- [ ] {capability_name}``
+    1. 如果 modules_dir 存在且对应模块文档存在，将 API 追加到模块文档的公开 API 表格
+    2. 否则追加到 2_CAPABILITIES.md 的对应模块分组
     3. 无法匹配模块时追加到「未分类」分组
     4. 保留已有内容不被修改
 
@@ -229,6 +259,7 @@ def apply_reverse_fixes(
         capabilities_path: 2_CAPABILITIES.md 文件路径
         reverse_drifts: ReverseDrift 列表
         code_modules: code-reader 扫描到的模块列表
+        modules_dir: .docs/modules/ 目录路径（为空则回退到全局模式）
 
     Returns:
         (更新后的文件内容, 变更描述列表)
@@ -239,6 +270,46 @@ def apply_reverse_fixes(
             with open(capabilities_path, encoding="utf-8") as f:
                 return f.read(), []
         return "## 未分类\n", []
+
+    # 如果 modules/ 目录存在，优先将 API 追加到模块文档
+    module_doc_handled: set[str] = set()  # 已在模块文档中处理的 API 名称
+    changes: list[str] = []
+
+    if modules_dir and os.path.isdir(modules_dir):
+        for drift in reverse_drifts:
+            # 从 drift.file 推断模块文档文件名
+            # drift.file 格式如 "src/chiwen_mcp"，源文件名需要从 drift.location 提取
+            # 或者直接用 drift.capability 在模块文档中查找
+            # 简单策略：遍历 modules/*.md，找到包含该模块路径的文档
+            for fname in os.listdir(modules_dir):
+                if not fname.endswith(".md"):
+                    continue
+                mod_doc_path = os.path.join(modules_dir, fname)
+                with open(mod_doc_path, encoding="utf-8") as f:
+                    mod_content = f.read()
+
+                # 检查该模块文档是否已包含此 API
+                if drift.capability in mod_content:
+                    module_doc_handled.add(drift.capability)
+                    break
+
+                # 检查源文件路径是否匹配
+                stem = fname[:-3]  # 去掉 .md
+                if stem in drift.file or drift.file.endswith(f"/{stem}.py"):
+                    # 追加到该模块文档的公开 API 表格
+                    _append_to_module_api_table(mod_doc_path, mod_content, drift.capability)
+                    module_doc_handled.add(drift.capability)
+                    changes.append(f"追加到模块文档 modules/{fname}: {drift.capability}")
+                    break
+
+    # 过滤掉已在模块文档中处理的 drift 项
+    remaining_drifts = [d for d in reverse_drifts if d.capability not in module_doc_handled]
+
+    if not remaining_drifts:
+        if os.path.isfile(capabilities_path):
+            with open(capabilities_path, encoding="utf-8") as f:
+                return f.read(), changes
+        return "## 未分类\n", changes
 
     # 读取现有内容
     if os.path.isfile(capabilities_path):
@@ -270,7 +341,7 @@ def apply_reverse_fixes(
     module_additions: dict[str, list[str]] = {}  # module_name → [capability_name, ...]
     uncategorized: list[str] = []
 
-    for drift in reverse_drifts:
+    for drift in remaining_drifts:
         cap_name = drift.capability
         # 跳过已存在的能力
         if cap_name in existing_capabilities:
@@ -511,10 +582,12 @@ def sync_docs(
                 modified_files.append("2_CAPABILITIES.md")
 
         if lens_output.reverse_drift:
+            modules_dir = os.path.join(docs_dir, "modules")
             _, reverse_changes = apply_reverse_fixes(
                 capabilities_path,
                 lens_output.reverse_drift,
                 cr_output.modules,
+                modules_dir=modules_dir,
             )
             result.reverse_fix_count = len(reverse_changes)
             result.details.extend(reverse_changes)

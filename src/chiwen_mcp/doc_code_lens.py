@@ -351,6 +351,77 @@ def parse_architecture(doc_content: str, doc_file: str = "1_ARCHITECTURE.md") ->
     return modules
 
 
+# ── 模块文档解析 ──
+
+
+def parse_module_doc(doc_content: str, doc_file: str = "") -> list[DocClaim]:
+    """解析 modules/*.md 中的公开 API 表格，提取 DocClaim 列表。
+
+    解析「## 公开 API」章节下的两列表格（| 函数/类 | 说明 |），
+    将每行转为一个 DocClaim（status="[x]"，表示文档声称已实现）。
+
+    Args:
+        doc_content: 模块文档的文本内容
+        doc_file: 文档文件名（如 modules/code_reader.md）
+
+    Returns:
+        DocClaim 列表
+    """
+    claims: list[DocClaim] = []
+    in_api_section = False
+    header_passed = False
+    module_name = ""
+    line_num = 0
+
+    for line in doc_content.splitlines():
+        line_num += 1
+        stripped = line.strip()
+
+        # 提取模块名（一级标题）
+        h1_match = re.match(r"^#\s+(.+)$", stripped)
+        if h1_match and not module_name:
+            module_name = h1_match.group(1).strip()
+            continue
+
+        # 检测「公开 API」章节
+        if re.match(r"^##\s+公开\s*API", stripped):
+            in_api_section = True
+            header_passed = False
+            continue
+
+        # 遇到下一个 ## 标题时退出
+        if in_api_section and re.match(r"^##\s+", stripped) and "公开" not in stripped:
+            in_api_section = False
+            continue
+
+        if not in_api_section:
+            continue
+
+        # 跳过表头行和分隔行
+        if stripped.startswith("|") and ("函数" in stripped or "---" in stripped or ":--" in stripped):
+            header_passed = True
+            continue
+
+        if not header_passed:
+            continue
+
+        # 解析表格行：| 函数/类 | 说明 |
+        table_match = re.match(r"^\|\s*`?([^|`]+)`?\s*\|\s*(.+?)\s*\|$", stripped)
+        if table_match:
+            api_name = table_match.group(1).strip().rstrip("()")
+            description = table_match.group(2).strip()
+            if api_name and api_name != "—":
+                claims.append(DocClaim(
+                    name=api_name,
+                    status="[x]",
+                    module=module_name,
+                    doc_file=doc_file,
+                    doc_location=f"line {line_num}",
+                ))
+
+    return claims
+
+
 # ── Forward Drift 检测 ──
 
 
@@ -799,6 +870,18 @@ def run_doc_code_lens(input_params: DocCodeLensInput) -> DocCodeLensOutput:
             with open(arch_path, encoding="utf-8") as f:
                 arch_content = f.read()
             arch_modules = parse_architecture(arch_content)
+
+    # 解析 modules/*.md（模块级文档，如果存在）
+    modules_dir = os.path.join(docs_dir, "modules")
+    if not input_params.doc_path and os.path.isdir(modules_dir):
+        for fname in sorted(os.listdir(modules_dir)):
+            if not fname.endswith(".md"):
+                continue
+            mod_doc_path = os.path.join(modules_dir, fname)
+            with open(mod_doc_path, encoding="utf-8") as f:
+                mod_content = f.read()
+            mod_claims = parse_module_doc(mod_content, f"modules/{fname}")
+            doc_claims.extend(mod_claims)
 
     # 调用 code-reader 扫描代码
     cr_input = CodeReaderInput(project_root=project_root)
