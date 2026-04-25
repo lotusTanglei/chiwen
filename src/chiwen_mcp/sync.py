@@ -109,19 +109,24 @@ def apply_capability_fixes(
     capabilities_path: str,
     forward_drifts: list[ForwardDrift],
     code_capabilities: set[str],
+    modules_dir: str = "",
 ) -> tuple[str, list[str]]:
     """修复能力矩阵，返回更新后的内容和变更描述列表。
 
     能力矩阵同步规则：
-    1. 新增可用能力 → 添加并标记 [x]
+    1. 新增可用能力 → 添加并标记 [x]（仅在无 modules/ 目录时执行）
     2. 移除的能力 → 标记 (废弃) 并保留记录
     3. 代码中不再存在的 [x] 能力 → 降级为 [ ] 并附 drift 说明
     4. 禁止出现虚假勾选
+
+    当 modules_dir 存在时，内部 API 变更由模块文档处理，
+    全局能力矩阵不追加裸函数名。
 
     Args:
         capabilities_path: 2_CAPABILITIES.md 文件路径
         forward_drifts: Forward Drift 列表（来自 doc-code-lens）
         code_capabilities: 代码中实际存在的能力名称集合
+        modules_dir: .docs/modules/ 目录路径（存在时跳过新增能力追加）
 
     Returns:
         (更新后的文件内容, 变更描述列表) 元组
@@ -183,21 +188,21 @@ def apply_capability_fixes(
     content = "\n".join(new_lines)
 
     # 规则 1：新增可用能力 → 添加并标记 [x]
-    new_capabilities = code_capabilities - existing_names
-    if new_capabilities:
-        # 在文件末尾添加新能力（在最后一个模块分组下）
-        additions: list[str] = []
-        for cap_name in sorted(new_capabilities):
-            additions.append(f"- [x] {cap_name}")
-            changes.append(f"新增: '{cap_name}' 标记为 [x]")
+    # 当 modules/ 目录存在时，内部 API 由模块文档管理，不追加到全局能力矩阵
+    has_modules = modules_dir and os.path.isdir(modules_dir)
+    if not has_modules:
+        new_capabilities = code_capabilities - existing_names
+        if new_capabilities:
+            additions: list[str] = []
+            for cap_name in sorted(new_capabilities):
+                additions.append(f"- [x] {cap_name}")
+                changes.append(f"新增: '{cap_name}' 标记为 [x]")
 
-        if additions:
-            # 找到最后一个非空行的位置，在其后追加
-            addition_block = "\n## 新增能力\n\n" + "\n".join(additions)
-            # 确保内容末尾有换行
-            if content and not content.endswith("\n"):
-                content += "\n"
-            content += addition_block + "\n"
+            if additions:
+                addition_block = "\n## 新增能力\n\n" + "\n".join(additions)
+                if content and not content.endswith("\n"):
+                    content += "\n"
+                content += addition_block + "\n"
 
     # 规则 2：检测已废弃的能力（在 existing 中标记为 [x] 但不在 code_capabilities 中，
     # 且不在 drift_claims 中 —— drift_claims 已经被规则 3 处理了）
@@ -570,11 +575,13 @@ def sync_docs(
                 code_capabilities.add(api)
 
         capabilities_path = os.path.join(docs_dir, "2_CAPABILITIES.md")
+        modules_dir = os.path.join(docs_dir, "modules")
         if os.path.isfile(capabilities_path):
             _, cap_changes = apply_capability_fixes(
                 capabilities_path,
                 lens_output.forward_drift,
                 code_capabilities,
+                modules_dir=modules_dir,
             )
             result.fix_count += len(cap_changes)
             result.details.extend(cap_changes)
@@ -582,7 +589,6 @@ def sync_docs(
                 modified_files.append("2_CAPABILITIES.md")
 
         if lens_output.reverse_drift:
-            modules_dir = os.path.join(docs_dir, "modules")
             _, reverse_changes = apply_reverse_fixes(
                 capabilities_path,
                 lens_output.reverse_drift,
