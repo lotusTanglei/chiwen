@@ -525,10 +525,17 @@ def _infer_modules(
         ".git",
         ".docs",
         ".venv",
+        ".claude",
+        ".trae",
+        ".kiro",
+        ".vscode",
+        ".idea",
+        ".pytest_cache",
         "__pycache__",
         "node_modules",
         "dist",
         "build",
+        "target",
         "coverage",
         "tests",
         "test",
@@ -553,7 +560,7 @@ def _infer_modules(
             if not parts:
                 continue
             top_dir = parts[0]
-            if top_dir in ignored_module_dirs:
+            if top_dir in ignored_module_dirs or top_dir.startswith("."):
                 continue
             top_dirs.setdefault(top_dir, []).append(node)
         module_groups = top_dirs
