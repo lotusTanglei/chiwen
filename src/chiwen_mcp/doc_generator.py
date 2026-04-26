@@ -601,24 +601,19 @@ def init_docs(project_root: str, mode: str = "error", lock_ttl_seconds: int = 60
         engine = TemplateEngine(project_root)
         variables = _build_template_variables(project_name, output)
 
-        # 创建 modules/ 子目录
+        # 创建 modules/ 子目录，镜像代码目录结构
         modules_dir = os.path.join(docs_dir, "modules")
         os.makedirs(modules_dir, exist_ok=True)
 
-        # 计算需要 LLM 撰写的模块文档文件名
+        # 为每个代码模块创建对应的文档目录
+        # 一个代码目录 = 一个文档目录 + 一个 README.md（由 LLM 撰写）
         module_doc_files: list[str] = []
         for mod in output.modules:
-            mod_files = [
-                n for n in output.structure
-                if n.type == "file" and n.path.startswith(mod.path + "/")
-            ]
-            api_by_file = _extract_public_api_by_file(
-                Path(project_root), mod_files
-            ) if mod_files else {}
-            for filename in api_by_file:
-                module_doc_files.append(f"modules/{filename}.md")
+            mod_doc_dir = os.path.join(modules_dir, mod.name)
+            os.makedirs(mod_doc_dir, exist_ok=True)
+            module_doc_files.append(f"modules/{mod.name}/README.md")
 
-        # skipped_for_llm = 全局核心文档 + 模块文档
+        # skipped_for_llm = 全局核心文档 + 模块 README
         skipped_for_llm = sorted(LLM_GENERATED_FILES) + sorted(set(module_doc_files))
 
         template_names = [
