@@ -10,46 +10,35 @@ chiwen-knowledge-kit 的核心实现。通过 MCP 协议对外暴露 7 个工具
 
 | 文件 | 职责 | 关键 API |
 |:--|:--|:--|
-| `server.py` | MCP Server 入口，注册 7 个工具 | `code_reader`、`init_docs_tool`、`doc_code_lens` |
-| `code_reader.py` | 代码扫描引擎，提取项目结构化知识 | `scan_project`、`CodeReaderInput` |
-| `doc_code_lens.py` | 文档与代码双向 drift 检测 | `run_doc_code_lens`、`check_forward_drift`、`check_reverse_drift` |
-| `doc_generator.py` | init 命令，生成骨架文件 | `init_docs`、`generate_architecture` |
-| `sync.py` | sync 命令，修复 drift 并追加 changelog | `sync_docs`、`apply_reverse_fixes` |
-| `status.py` | status 命令，生成健康度报告 | `get_status`、`export_markdown` |
-| `onboard.py` | onboard 命令，创建个人空间 | `onboard`、`get_reading_list` |
+| `server.py` | MCP Server 入口，注册 7 个工具 | `code_reader`、`doc_code_lens`、`sync_docs_tool` |
+| `code_reader.py` | 代码扫描引擎 | `scan_project`、`CodeReaderInput` |
+| `doc_code_lens.py` | drift 检测（forward + reverse） | `run_doc_code_lens`、`check_forward_drift` |
+| `doc_generator.py` | init 命令骨架生成 | `init_docs`、`LLM_GENERATED_FILES` |
+| `sync.py` | sync 命令修复逻辑 | `sync_docs`、`apply_reverse_fixes` |
+| `status.py` | 健康度报告 | `get_status`、`export_markdown` |
+| `onboard.py` | 成员引导 | `onboard`、`get_reading_list` |
 | `git_changelog.py` | Git 历史分析 | `run_git_changelog` |
-| `models.py` | 共享数据模型（30+ dataclass） | `CodeReaderOutput`、`ForwardDrift`、`HealthReport` |
-| `collaboration.py` | 文件锁、状态文件、Git 集成 | `acquire_docs_lock`、`is_git_repo` |
-| `changelog_utils.py` | 5_CHANGELOG.md 解析和追加 | `append_changelog`、`parse_changelog` |
-| `template_engine.py` | 自定义文档模板引擎 | `TemplateEngine`、`init_templates` |
-| `integrations.py` | CI/Hook/Cron 配置模板生成 | `generate_ci_config`、`generate_pre_commit_hook` |
+| `models.py` | 共享数据模型（30+ dataclass） | `CodeReaderOutput`、`ForwardDrift` |
+| `collaboration.py` | 文件锁、Git 集成 | `acquire_docs_lock`、`is_git_repo` |
+| `changelog_utils.py` | Changelog 追加 | `append_changelog` |
+| `template_engine.py` | 自定义模板引擎 | `TemplateEngine` |
+| `integrations.py` | CI/Hook/Cron 模板 | `generate_ci_config` |
 
 ## 关键设计
 
-### init 三阶段流程
+### init 四阶段流程
 
-1. `code_reader` 扫描项目 → 返回 `CodeReaderOutput`
-2. `init_docs` 生成骨架文件（INDEX/ROADMAP/DECISIONS/CHANGELOG）
-3. LLM 基于扫描结果撰写 ARCHITECTURE、CAPABILITIES 和模块文档
+code_reader 扫描 → init_docs 骨架（跳过 LLM_GENERATED_FILES）→ LLM 撰写全局文档 → LLM 撰写模块文档。`skipped_for_llm` 字段协调 MCP 工具和 LLM 的分工。
 
-`init_docs` 通过 `LLM_GENERATED_FILES` 常量控制跳过哪些文件，`skipped_for_llm` 字段告知 LLM 需要撰写什么。
+### drift 检测
 
-### drift 检测算法
+多因子加权评分：精确名称匹配 40% + 关键词覆盖率 25% + 代码结构匹配 20% + 路径相关性 15%。modules/ 存在时，sync 不向全局能力矩阵追加裸函数名。
 
-`doc_code_lens` 使用多因子加权评分：
-- 精确名称匹配（40%）+ 关键词覆盖率（25%）+ 代码结构匹配（20%）+ 路径相关性（15%）
-- 得分 ≥ 0.7 → HIGH，≥ 0.4 → MEDIUM，< 0.4 → LOW
+### 多人协作
 
-Forward drift：文档声称 [x] 但代码没有 → 降级为 [ ]
-Reverse drift：代码有但文档没记录 → 追加到模块文档或能力矩阵
-
-### 多人协作安全
-
-- `collaboration.py` 提供文件锁（`acquire_docs_lock`），防止多人同时写 `.docs/`
-- sync 前检查 Git dirty 和 HEAD 一致性，防止覆盖
-- `.gitattributes` 对 CAPABILITIES 和 CHANGELOG 使用 `merge=union` 减少冲突
+文件锁 + Git dirty 检查 + HEAD 一致性检查 + merge=union 策略。
 
 ## 依赖关系
 
-- 外部依赖：mcp（MCP SDK）、pydantic
-- 被依赖：`src/skill/SKILL.md`（Skill 编排层调用 MCP 工具）
+- 外部：mcp、pydantic
+- 被依赖：src/skill/SKILL.md（Skill 编排层）

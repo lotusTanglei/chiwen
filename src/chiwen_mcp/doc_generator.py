@@ -605,13 +605,22 @@ def init_docs(project_root: str, mode: str = "error", lock_ttl_seconds: int = 60
         modules_dir = os.path.join(docs_dir, "modules")
         os.makedirs(modules_dir, exist_ok=True)
 
-        # 为每个代码模块创建对应的文档目录
+        # 为每个代码模块创建对应的文档目录（递归子模块）
         # 一个代码目录 = 一个文档目录 + 一个 README.md（由 LLM 撰写）
         module_doc_files: list[str] = []
-        for mod in output.modules:
-            mod_doc_dir = os.path.join(modules_dir, mod.name)
+
+        def _collect_module_docs(mod: Module, parent_doc_path: str) -> None:
+            """递归收集模块文档路径并创建目录。"""
+            mod_doc_dir = os.path.join(modules_dir, parent_doc_path, mod.name)
             os.makedirs(mod_doc_dir, exist_ok=True)
-            module_doc_files.append(f"modules/{mod.name}/README.md")
+            doc_rel = f"modules/{parent_doc_path}{mod.name}/README.md" if parent_doc_path else f"modules/{mod.name}/README.md"
+            module_doc_files.append(doc_rel)
+            for child in mod.children:
+                child_parent = f"{parent_doc_path}{mod.name}/" if parent_doc_path else f"{mod.name}/"
+                _collect_module_docs(child, child_parent)
+
+        for mod in output.modules:
+            _collect_module_docs(mod, "")
 
         # skipped_for_llm = 全局核心文档 + 模块 README
         skipped_for_llm = sorted(LLM_GENERATED_FILES) + sorted(set(module_doc_files))

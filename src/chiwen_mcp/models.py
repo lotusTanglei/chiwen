@@ -45,13 +45,14 @@ class EntryPoint:
 
 @dataclass
 class Module:
-    """模块信息"""
+    """模块信息，支持递归子模块"""
 
     name: str = ""
     path: str = ""
     layer: str = ""
     dependencies: list[str] = field(default_factory=list)
     public_api: list[str] = field(default_factory=list)
+    children: list[Module] = field(default_factory=list)
 
 
 @dataclass

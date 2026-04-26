@@ -518,29 +518,66 @@ def _infer_modules(
     structure: list[FileNode],
     focus: list[str],
 ) -> list[Module]:
-    """通过文件命名约定和导入关系推断模块层级和依赖。"""
+    """通过文件命名约定和导入关系推断模块层级和依赖。
+
+    支持递归子模块检测：如果一个模块目录下有子目录且子目录包含代码文件，
+    则子目录作为 children 递归处理。
+    """
     root = Path(project_root)
-    modules: list[Module] = []
     ignored_module_dirs = {
-        ".git",
-        ".docs",
-        ".venv",
-        ".claude",
-        ".trae",
-        ".kiro",
-        ".vscode",
-        ".idea",
-        ".pytest_cache",
-        "__pycache__",
-        "node_modules",
-        "dist",
-        "build",
-        "target",
-        "coverage",
-        "tests",
-        "test",
+        ".git", ".docs", ".venv", ".claude", ".trae", ".kiro",
+        ".vscode", ".idea", ".pytest_cache", "__pycache__",
+        "node_modules", "dist", "build", "target", "coverage",
+        "tests", "test",
     }
 
+    def _build_module(module_name: str, dir_rel_path: str, nodes: list[FileNode], known: set[str]) -> Module:
+        """递归构建模块，检测子目录作为 children。"""
+        dir_path = root / dir_rel_path
+
+        module_files = [n for n in nodes if n.type == "file"]
+        layer = _infer_layer(module_name, dir_rel_path)
+        public_api = _extract_public_api(root, module_files)
+        dependencies = _extract_dependencies(root, module_files, known_modules=known, source_root=None)
+
+        # 检测子目录作为子模块
+        children: list[Module] = []
+        child_dirs: dict[str, list[FileNode]] = {}
+        for n in nodes:
+            rel = Path(n.path)
+            # 找到直接子目录下的文件
+            try:
+                relative = rel.relative_to(dir_rel_path)
+            except ValueError:
+                continue
+            parts = relative.parts
+            if len(parts) >= 2:
+                child_name = parts[0]
+                if child_name in ignored_module_dirs or child_name.startswith(".") or child_name == "__pycache__":
+                    continue
+                child_dirs.setdefault(child_name, []).append(n)
+
+        for child_name, child_nodes in sorted(child_dirs.items()):
+            child_path = str(Path(dir_rel_path) / child_name)
+            child_dir = root / child_path
+            if not child_dir.is_dir():
+                continue
+            child_files = [n for n in child_nodes if n.type == "file"]
+            if not child_files:
+                continue
+            child_mod = _build_module(child_name, child_path, child_nodes, known)
+            children.append(child_mod)
+
+        return Module(
+            name=module_name,
+            path=dir_rel_path,
+            layer=layer,
+            dependencies=dependencies,
+            public_api=public_api,
+            children=children,
+        )
+
+    # 顶层模块分组（与之前逻辑一致）
     source_root: str | None = None
     module_groups: dict[str, list[FileNode]] = {}
 
@@ -566,42 +603,23 @@ def _infer_modules(
         module_groups = top_dirs
 
     known_modules = set(module_groups.keys())
+    modules: list[Module] = []
 
     for module_name, nodes in module_groups.items():
-        dir_rel_path = (
-            str(Path(source_root) / module_name) if source_root else module_name
-        )
+        dir_rel_path = str(Path(source_root) / module_name) if source_root else module_name
         dir_path = root / dir_rel_path
         if not dir_path.is_dir():
             continue
 
-        if focus and not any(
-            fnmatch.fnmatch(module_name, f) or module_name == f for f in focus
-        ):
+        if focus and not any(fnmatch.fnmatch(module_name, f) or module_name == f for f in focus):
             continue
 
         module_files = [n for n in nodes if n.type == "file"]
         if not module_files:
             continue
 
-        layer = _infer_layer(module_name, dir_rel_path)
-        public_api = _extract_public_api(root, module_files)
-        dependencies = _extract_dependencies(
-            root,
-            module_files,
-            known_modules=known_modules,
-            source_root=source_root,
-        )
-
-        modules.append(
-            Module(
-                name=module_name,
-                path=dir_rel_path,
-                layer=layer,
-                dependencies=dependencies,
-                public_api=public_api,
-            )
-        )
+        mod = _build_module(module_name, dir_rel_path, nodes, known_modules)
+        modules.append(mod)
 
     return modules
 
